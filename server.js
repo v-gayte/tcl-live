@@ -10,15 +10,15 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// URLs API Grand Lyon
+// URLs API Grand Lyon (Temps réel et Data alphanumérique)
 const BUSES_URL = "https://data.grandlyon.com/siri-lite/2.0/vehicle-monitoring.json";
 const ALERTS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclalertetrafic_2/all.json?maxfeatures=-1&start=1";
 const STOPS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclarret/all.json?maxfeatures=-1";
-const ZONES_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclzonearret/all.json?maxfeatures=-1";
 
-// Nouvelles URLs pour les tracés (Geométries)
-const BUS_ROUTES_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclbusligne/all.json?maxfeatures=-1";
-const TRAM_ROUTES_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tcltramligne/all.json?maxfeatures=-1";
+// NOUVEAU : URLs WFS cartographiques standard (GeoJSON)
+// Le WFS ne nécessite pas d'authentification et renvoie la géométrie native EPSG:4326
+const BUS_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignebus_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+const TRAM_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignetram_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
 
 const USERNAME = process.env.API_USER?.trim();
 const PASSWORD = process.env.API_PASSWORD?.trim();
@@ -26,8 +26,35 @@ const credentials = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 
 let busCache = null;
 let stopsCache = null;
-let routesCache = null; // Cache pour les tracés (données lourdes)
+let routesCache = null; 
 let busLastFetch = 0;
+
+// API : Tracés des lignes via WFS (Format GeoJSON)
+app.get('/api/routes', async (req, res) => {
+    if (routesCache) return res.json(routesCache);
+    try {
+        console.log("⏳ Chargement des tracés via WFS...");
+        // Pas besoin de headers d'authentification pour ce flux WFS public
+        const [resBus, resTram] = await Promise.all([
+            fetch(BUS_ROUTES_URL),
+            fetch(TRAM_ROUTES_URL)
+        ]);
+        
+        const busData = await resBus.json();
+        const tramData = await resTram.json();
+
+        // WFS renvoie une 'FeatureCollection', on extrait le tableau 'features'
+        routesCache = {
+            bus: busData.features || [],
+            tram: tramData.features || []
+        };
+        console.log(`✅ Tracés chargés : ${routesCache.bus.length} bus, ${routesCache.tram.length} trams.`);
+        res.json(routesCache);
+    } catch (e) { 
+        console.error("⚠️ Erreur tracés WFS:", e);
+        res.status(500).json({ error: "Erreur tracés" }); 
+    }
+});
 
 // API : Positions des bus (Temps réel)
 app.get('/api/buses', async (req, res) => {
@@ -41,27 +68,6 @@ app.get('/api/buses', async (req, res) => {
         busLastFetch = now;
         res.json(busCache);
     } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// API : Tracés des lignes (Bus & Tram)
-app.get('/api/routes', async (req, res) => {
-    if (routesCache) return res.json(routesCache);
-    try {
-        console.log("⏳ Chargement des tracés depuis l'API...");
-        const [resBus, resTram] = await Promise.all([
-            fetch(BUS_ROUTES_URL, { headers: { 'Authorization': `Basic ${credentials}` } }),
-            fetch(TRAM_ROUTES_URL, { headers: { 'Authorization': `Basic ${credentials}` } })
-        ]);
-        
-        const busData = await resBus.json();
-        const tramData = await resTram.json();
-
-        routesCache = {
-            bus: busData.values || [],
-            tram: tramData.values || []
-        };
-        res.json(routesCache);
-    } catch (e) { res.status(500).json({ error: "Erreur tracés" }); }
 });
 
 // API : Arrêts
@@ -104,4 +110,4 @@ app.get('/api/alerts', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erreur alertes" }); }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur WS : http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur : http://localhost:${PORT}`));
