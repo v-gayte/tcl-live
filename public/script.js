@@ -3,23 +3,27 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const busLayer = L.layerGroup().addTo(map);
-const routesLayer = L.layerGroup().addTo(map); // Calque pour les lignes (tracés)
+const routesLayer = L.layerGroup().addTo(map); // Calque pour les tracés
 const stopsLayer = L.layerGroup();
 
-let allRoutesData = { bus: [], tram: [] }; // Stockage des tracés API
+let allRoutesData = { bus: [], tram: [] }; 
 let userMarker = null, userPosition = null;
 let activeFilters = new Set(), knownLines = new Set();
 let dictStops = {}, allStopsGeo = [];
 let currentStopInterval = null;
 
-// 1. Charger les TRACÉS depuis l'API WS
+// 1. Charger les TRACÉS depuis notre API WFS
 fetch('/api/routes')
-    .then(res => res.json())
+    .then(res => {
+        if (!res.ok) throw new Error("Erreur de chargement des tracés");
+        return res.json();
+    })
     .then(data => {
         allRoutesData = data;
-        drawFilteredRoutes(); // Premier dessin
-        console.log("✅ Tracés API chargés");
-    });
+        drawFilteredRoutes(); 
+        console.log("✅ Tracés WFS chargés !");
+    })
+    .catch(e => console.error("⚠️", e));
 
 // 2. Charger les ARRÊTS
 fetch('/api/stops')
@@ -29,22 +33,24 @@ fetch('/api/stops')
         buildStopsLayer();
     });
 
-// Fonction pour dessiner les tracés filtrés
+// 3. Fonction pour dessiner les tracés filtrés
 function drawFilteredRoutes() {
-    routesLayer.clearLayers();
+    routesLayer.clearLayers(); // Efface la carte
     
     const draw = (features, color, weight, opacity) => {
-        features.forEach(f => {
-            // Filtrage : On affiche si pas de filtre OU si la ligne est sélectionnée
-            const lineName = f.ligne; 
+        features.forEach(feature => {
+            // Dans un GeoJSON, les données de la ligne sont dans 'properties'
+            const props = feature.properties;
+            // Sécurité : l'API TCL appelle parfois ça 'ligne' ou 'code_ligne'
+            const lineName = props.ligne || props.code_ligne || props.nom; 
+            
+            // Si on a des filtres actifs et que cette ligne n'y est pas, on ignore le tracé
             if (activeFilters.size > 0 && !activeFilters.has(lineName)) return;
 
-            if (f.the_geom) {
-                L.geoJSON(f.the_geom, {
-                    style: { color, weight, opacity },
-                    interactive: false
-                }).addTo(routesLayer);
-            }
+            L.geoJSON(feature, {
+                style: { color, weight, opacity },
+                interactive: false
+            }).addTo(routesLayer);
         });
     };
 
@@ -52,7 +58,7 @@ function drawFilteredRoutes() {
     draw(allRoutesData.tram, '#E2001A', 4, 0.6);
 }
 
-// Construction des arrêts (Taille augmentée radius: 8)
+// Construction des arrêts 
 function buildStopsLayer() {
     stopsLayer.clearLayers();
     allStopsGeo.forEach(stop => {
@@ -107,7 +113,7 @@ function toggleStopsVisibility() {
 }
 map.on('zoomend', toggleStopsVisibility);
 
-// Géolocalisation temps réel
+// Géolocalisation
 let isTracking = false;
 document.getElementById('locate-btn').onclick = () => {
     if (!isTracking) {
@@ -135,16 +141,30 @@ async function updateBuses() {
             const j = v.MonitoredVehicleJourney;
             const line = j.LineRef.value.split('::')[1]?.split(':')[0] || j.LineRef.value;
             knownLines.add(line);
+            
             if (activeFilters.size > 0 && !activeFilters.has(line)) return;
             
+            // Calcul de la flèche de direction (si présente dans l'API)
+            const bearing = j.Bearing;
+            const hasBearing = bearing !== undefined && bearing !== null;
+            const isZoomedOut = map.getZoom() < 14;
+            const ARROW_H = isZoomedOut ? 0 : 12;
+            const size = isZoomedOut ? 16 : 32;
+            const arrowSVG = hasBearing && !isZoomedOut ? `<div style="position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(${bearing}deg);transform-origin:center ${ARROW_H + size / 2}px;"><svg width="12" height="${ARROW_H + 2}"><polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}" fill="white" stroke="#E2001A" stroke-width="1.5"/></svg></div>` : '';
+
             const icon = L.divIcon({
                 className: 'custom-bus-icon',
-                html: `<div class="bus-bubble" style="background:#E2001A;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;border:2px solid #fff;">${line}</div>`,
-                iconSize: [24, 24]
+                html: `<div style="position:relative; width:${size}px; height:${size + ARROW_H}px; overflow:visible;">
+                        ${arrowSVG}
+                        <div class="bus-bubble" style="position:absolute;top:${ARROW_H}px;background:#E2001A;color:#fff;border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:${isZoomedOut?'0':(line.length>2?'10px':'12px')};font-weight:bold;border:2px solid #fff;">${isZoomedOut?'':line}</div>
+                    </div>`,
+                iconSize: [size, size + ARROW_H],
+                iconAnchor: [size / 2, size + ARROW_H - size / 2]
             });
+            
             L.marker([j.VehicleLocation.Latitude, j.VehicleLocation.Longitude], { icon }).addTo(busLayer);
         });
-        document.getElementById('update-text').innerText = `${new Date().toLocaleTimeString()} • ${vehicles.length} bus`;
+        document.getElementById('update-text').innerText = `${new Date().toLocaleTimeString()} • ${vehicles.length} véhicules`;
     } catch(e) {}
 }
 
@@ -172,9 +192,10 @@ function syncUI() {
     document.getElementById('filter-btn').innerText = activeFilters.size === 0 ? '🚍 Filtrer' : `🚍 ${activeFilters.size} sélectionnés`;
     updateBuses();
     buildStopsLayer();
-    drawFilteredRoutes(); // RE-DESSINE LES TRACÉS SELON LE FILTRE
+    drawFilteredRoutes(); // Relance le dessin des tracés
 }
 
 document.getElementById('close-filters').onclick = () => document.getElementById('filter-modal').classList.add('hidden');
+map.on('zoomend', updateBuses);
 setInterval(updateBuses, 15000);
 updateBuses();
