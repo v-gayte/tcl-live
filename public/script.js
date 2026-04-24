@@ -6,18 +6,19 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const busLayer = L.layerGroup().addTo(map);
-const routesLayer = L.layerGroup().addTo(map); // Nouveau calque pour les tracés
+const routesLayer = L.layerGroup().addTo(map); 
 
 let userMarker = null;
-let userPosition = null; // { lat, lng } — updated on geolocation
+let userPosition = null; 
 let activeFilters = new Set();
 let knownLines = new Set();
-let busPositionsByLine = {};  // still used for live counts
+let busPositionsByLine = {};  
 
 // --- DONNÉES STATIQUES ---
 let dictStops = {};
-let allStopsGeo = [];   // [{id, nom, lat, lng, lines: ["C3","70"]}, …]
-const stopsLayer = L.layerGroup(); // added to map conditionally by zoom
+let allStopsGeo = [];   
+const stopsLayer = L.layerGroup(); 
+let currentStopInterval = null; // Gestion du rafraîchissement auto des popups
 
 // 1. Charger et afficher les tracés des BUS
 fetch('/bus.geojson')
@@ -28,7 +29,6 @@ fetch('/bus.geojson')
             style: { color: '#888888', weight: 2, opacity: 0.3 },
             interactive: false
         }).addTo(routesLayer);
-        console.log("✅ Tracés Bus chargés !");
     }).catch(e => console.error("⚠️ Erreur Bus GeoJSON:", e));
 
 // 2. Charger et afficher les tracés des TRAMS
@@ -40,22 +40,17 @@ fetch('/tram.geojson')
             style: { color: '#E2001A', weight: 3, opacity: 0.5 },
             interactive: false
         }).addTo(routesLayer);
-        console.log("✅ Tracés Tram chargés !");
     }).catch(e => console.error("⚠️ Erreur Tram GeoJSON:", e));
 
 // 3. Charger les arrêts (dictionnaire + géo)
 fetch('/api/stops')
     .then(res => res.json())
     .then(data => {
-        dictStops = data.dict || data;  // backward compatible
+        dictStops = data.dict || data;  
         allStopsGeo = data.geo || [];
-        console.log(`✅ ${Object.keys(dictStops).length} noms | ${allStopsGeo.length} arrêts géo`);
-        // Build the stops markers (small grey dots)
         buildStopsLayer();
     }).catch(e => console.error("⚠️ Erreur chargement arrêts:", e));
 
-
-// --- DISTANCE (Haversine) — déclaré tôt, utilisé par buildStopsLayer ---
 function distanceMeters(lat1, lng1, lat2, lng2) {
     const R = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -66,31 +61,34 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Build stop markers — shows only stops serving active filters (or all if no filter)
+// Construction des marqueurs d'arrêts (Taille augmentée)
 function buildStopsLayer() {
     stopsLayer.clearLayers();
 
     allStopsGeo.forEach(stop => {
-        // If filters are active, only show stops that serve at least one selected line
         if (activeFilters.size > 0 && !stop.lines.some(l => activeFilters.has(l))) return;
 
+        // TAILLE AUGMENTÉE (radius 8 au lieu de 4)
         const m = L.circleMarker([stop.lat, stop.lng], {
-            radius: 4, fillColor: '#555', color: '#fff',
-            weight: 1, fillOpacity: 0.6, opacity: 0.9,
+            radius: 8, fillColor: '#555', color: '#fff',
+            weight: 2, fillOpacity: 0.6, opacity: 0.9,
         });
 
         const linesHtml = stop.lines
             .map(l => {
                 const active = activeFilters.size === 0 || activeFilters.has(l);
                 return `<span style="display:inline-block;background:${active ? '#E2001A' : '#999'};color:#fff;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.8em;font-weight:700;">${l}</span>`;
-            })
-            .join('');
+            }).join('');
 
-        // Popup skeleton — arrivals injected async on open
         const popupId = `arrivals-${stop.id}`;
+        
+        // Ajout du bouton de rafraîchissement 🔄
         m.bindPopup(`
             <div style="min-width:200px;">
-                <b style="font-size:1em;">${stop.nom}</b>
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <b style="font-size:1.1em;">${stop.nom}</b>
+                    <button id="refresh-stop-${stop.id}" class="refresh-btn" title="Rafraîchir">🔄</button>
+                </div>
                 <div style="margin-top:6px;">${linesHtml}</div>
                 <hr style="border:0;border-top:1px solid #eee;margin:8px 0;">
                 <div id="${popupId}" style="font-size:0.85em;color:#555;">
@@ -98,38 +96,52 @@ function buildStopsLayer() {
                 </div>
             </div>`, { maxWidth: 280 });
 
-        // Lazy-fetch arrivals when popup opens
-        m.on('popupopen', async () => {
+        m.on('popupopen', () => {
             const el = document.getElementById(popupId);
-            if (!el) return;
-            try {
-                const res = await fetch(`/api/arrivals/${stop.id}`);
-                const data = await res.json();
-                const passages = data.passages || [];
-                if (passages.length === 0) {
-                    el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
-                    return;
+            const btn = document.getElementById(`refresh-stop-${stop.id}`);
+            
+            const fetchArrivals = async () => {
+                if (!el) return;
+                if (btn) btn.classList.add('spin-anim'); // Animation visuelle
+                try {
+                    const res = await fetch(`/api/arrivals/${stop.id}`);
+                    const data = await res.json();
+                    const passages = data.passages || [];
+                    if (passages.length === 0) {
+                        el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
+                    } else {
+                        el.innerHTML = passages.slice(0, 6).map(p => {
+                            const isRT = p.type === 'R';
+                            const delaiStyle = isRT ? 'color:#E2001A;font-weight:700;' : 'color:#777;';
+                            const rtBadge = isRT ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>' : '';
+                            const heure = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
+                            return `
+                                <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f0f0f0;">
+                                    <span style="background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;font-weight:700;font-size:0.85em;white-space:nowrap;">${p.ligne}</span>
+                                    <span style="flex:1;color:#333;font-size:0.85em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.direction}">${p.direction}</span>
+                                    <span style="${delaiStyle}white-space:nowrap;">${p.delai}${rtBadge}</span>
+                                    <span style="color:#aaa;font-size:0.8em;white-space:nowrap;">${heure}</span>
+                                </div>`;
+                        }).join('');
+                    }
+                } catch (e) {
+                    if (el) el.innerHTML = '<i style="color:#c00;">Erreur de chargement</i>';
                 }
-                el.innerHTML = passages.slice(0, 6).map(p => {
-                    const isRT = p.type === 'R';
-                    const delaiStyle = isRT
-                        ? 'color:#E2001A;font-weight:700;'
-                        : 'color:#777;';
-                    const rtBadge = isRT
-                        ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>'
-                        : '';
-                    // Format "2026-04-24 16:25:00" → "16:25"
-                    const heure = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
-                    return `
-                        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f0f0f0;">
-                            <span style="background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;font-weight:700;font-size:0.85em;white-space:nowrap;">${p.ligne}</span>
-                            <span style="flex:1;color:#333;font-size:0.85em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.direction}">${p.direction}</span>
-                            <span style="${delaiStyle}white-space:nowrap;">${p.delai}${rtBadge}</span>
-                            <span style="color:#aaa;font-size:0.8em;white-space:nowrap;">${heure}</span>
-                        </div>`;
-                }).join('');
-            } catch (e) {
-                if (el) el.innerHTML = '<i style="color:#c00;">Erreur de chargement</i>';
+                if (btn) setTimeout(() => btn.classList.remove('spin-anim'), 500);
+            };
+
+            fetchArrivals();
+            if (btn) btn.onclick = fetchArrivals; // Sur le clic du bouton
+
+            // Rafraîchissement automatique toutes les 15s
+            if (currentStopInterval) clearInterval(currentStopInterval);
+            currentStopInterval = setInterval(fetchArrivals, 15000);
+        });
+
+        m.on('popupclose', () => {
+            if (currentStopInterval) {
+                clearInterval(currentStopInterval);
+                currentStopInterval = null;
             }
         });
 
@@ -147,8 +159,26 @@ function toggleStopsVisibility() {
 }
 map.on('zoomend', toggleStopsVisibility);
 
-// --- GÉOLOCALISATION ---
-document.getElementById('locate-btn').onclick = () => map.locate({ setView: true, maxZoom: 16 });
+// --- GÉOLOCALISATION EN TEMPS RÉEL ---
+let isTrackingLocation = false;
+let firstLocationFound = false;
+
+document.getElementById('locate-btn').onclick = () => {
+    if (!isTrackingLocation) {
+        // Premier appui : On active le suivi continu
+        isTrackingLocation = true;
+        document.getElementById('locate-btn').style.color = 'var(--tcl-red)'; 
+        map.locate({ watch: true, setView: false, enableHighAccuracy: true });
+        
+        if (userPosition) map.setView([userPosition.lat, userPosition.lng], 16);
+    } else {
+        // Appuis suivants : On recentre juste la vue sur la position actuelle
+        if (userPosition) {
+            map.setView([userPosition.lat, userPosition.lng], 16);
+        }
+    }
+};
+
 map.on('locationfound', (e) => {
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
     if (!userMarker) {
@@ -156,11 +186,15 @@ map.on('locationfound', (e) => {
             radius: 8, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
         }).addTo(map);
     } else {
-        userMarker.setLatLng(e.latlng);
+        userMarker.setLatLng(e.latlng); // Mise à jour de la position sans recentrer de force la carte
     }
-    // Position stored silently — used for proximity sort in the filter
+    
+    // On recentre automatiquement UNIQUEMENT lors du tout premier fix GPS
+    if (!firstLocationFound && isTrackingLocation) {
+        map.setView(e.latlng, 16);
+        firstLocationFound = true;
+    }
 });
-
 
 // --- GESTION DES BUS ---
 function formatLine(val) {
@@ -168,14 +202,8 @@ function formatLine(val) {
     return val.split('::')[1]?.split(':')[0] || val;
 }
 
-// Fonction ultra-robuste pour trouver le nom de l'arrêt
 function getStopName(siriRef, siriNameObj) {
-    // 1. Si le nom est fourni directement par le bus, on le prend !
-    if (siriNameObj && siriNameObj[0] && siriNameObj[0].value) {
-        return siriNameObj[0].value;
-    }
-    
-    // 2. Sinon, on extrait l'ID et on cherche dans notre dictionnaire
+    if (siriNameObj && siriNameObj[0] && siriNameObj[0].value) return siriNameObj[0].value;
     if (!siriRef) return "Inconnue";
     const stopId = siriRef.split(':')[3]; 
     return dictStops[stopId] || `Arrêt n°${stopId}`;
@@ -190,7 +218,7 @@ async function updateBuses() {
         busLayer.clearLayers();
         let visibleCount = 0;
         const currentZoom = map.getZoom();
-        const tempPositions = {}; // collect positions per line this refresh
+        const tempPositions = {}; 
 
         vehicles.forEach(v => {
             const journey = v.MonitoredVehicleJourney;
@@ -203,68 +231,45 @@ async function updateBuses() {
             const lng = journey.VehicleLocation.Longitude;
             visibleCount++;
 
-            // Track bus positions per line for proximity filter
             if (!tempPositions[line]) tempPositions[line] = [];
             tempPositions[line].push({ lat, lng });
 
-            // ── Direction arrow ──────────────────────────────────────────
-            // SIRI provides Bearing as degrees from North (0 = North, 90 = East …)
-            const bearing = journey.Bearing; // number or undefined
+            const bearing = journey.Bearing; 
             const hasBearing = bearing !== undefined && bearing !== null;
 
             const isZoomedOut = currentZoom < 14;
             const size = isZoomedOut ? 16 : 32;
             const text = isZoomedOut ? '' : line;
-
-            // Arrow height above the bubble in px (hidden when zoomed out)
             const ARROW_H = isZoomedOut ? 0 : 12;
-
-            // Total icon wrapper dimensions
             const wrapperW = size;
             const wrapperH = size + ARROW_H;
 
-            // Build SVG arrow (pointing UP = North by default)
-            // We rotate the entire .bus-arrow element around its bottom-center
-            // which coincides with the bubble center → perfect compass rotation.
             const arrowSVG = hasBearing && !isZoomedOut ? `
-                <div class="bus-arrow" style="
-                    transform: translateX(-50%) rotate(${bearing}deg);
-                    transform-origin: center ${ARROW_H + size / 2}px;
-                ">
-                    <svg width="12" height="${ARROW_H + 2}" viewBox="0 0 12 ${ARROW_H + 2}"
-                         xmlns="http://www.w3.org/2000/svg">
-                        <!-- Arrowhead at top, shaft going down -->
-                        <polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}"
-                                 fill="white" stroke="#E2001A" stroke-width="1.5"
-                                 stroke-linejoin="round"/>
+                <div class="bus-arrow" style="transform: translateX(-50%) rotate(${bearing}deg); transform-origin: center ${ARROW_H + size / 2}px;">
+                    <svg width="12" height="${ARROW_H + 2}" viewBox="0 0 12 ${ARROW_H + 2}" xmlns="http://www.w3.org/2000/svg">
+                        <polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}" fill="white" stroke="#E2001A" stroke-width="1.5" stroke-linejoin="round"/>
                     </svg>
                 </div>` : '';
 
-            // Font size scales with line-number length
             const fontSize = line.length > 2 ? '10px' : line.length > 1 ? '12px' : '14px';
 
             const busIcon = L.divIcon({
                 className: 'custom-bus-icon',
-                html: `
-                    <div style="position:relative; width:${wrapperW}px; height:${wrapperH}px; overflow:visible;">
+                html: `<div style="position:relative; width:${wrapperW}px; height:${wrapperH}px; overflow:visible;">
                         ${arrowSVG}
-                        <div class="bus-bubble" style="top:${ARROW_H}px;">
-                            <span style="font-size:${fontSize}; line-height:1;">${text}</span>
-                        </div>
+                        <div class="bus-bubble" style="top:${ARROW_H}px;"><span style="font-size:${fontSize}; line-height:1;">${text}</span></div>
                     </div>`,
                 iconSize:   [wrapperW, wrapperH],
-                iconAnchor: [wrapperW / 2, wrapperH - size / 2], // anchor = centre de la bulle
+                iconAnchor: [wrapperW / 2, wrapperH - size / 2], 
             });
 
-            // ── Popup content ────────────────────────────────────────────
             const destinationPrecise = getStopName(journey.DestinationRef?.value, journey.DestinationName);
             const prochainArret = getStopName(journey.MonitoredCall?.StopPointRef?.value, journey.MonitoredCall?.StopPointName);
 
             L.marker([lat, lng], { icon: busIcon }).addTo(busLayer)
              .bindPopup(`
                 <div style="text-align:center; min-width:160px;">
-                    <b style="font-size:1.2em; color:#E2001A;">Ligne ${line}</b>
-                    <br>
+                    <b style="font-size:1.2em; color:#E2001A;">Ligne ${line}</b><br>
                     <span style="color:#555;">Vers : <b>${destinationPrecise}</b></span>
                 </div>
                 <hr style="border:0; border-top:1px solid #ddd; margin:8px 0;">
@@ -284,7 +289,6 @@ document.getElementById('filter-btn').onclick = () => {
     const list = document.getElementById('filter-list');
     list.innerHTML = "";
     
-    // "Toutes" button
     const btnAll = document.createElement('button');
     btnAll.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
     btnAll.innerText = "Toutes";
@@ -295,55 +299,48 @@ document.getElementById('filter-btn').onclick = () => {
     };
     list.appendChild(btnAll);
 
-    // Merge known bus lines with all lines from stops (so we see lines even without active buses)
-    const allLinesSet = new Set(knownLines);
-    allStopsGeo.forEach(s => s.lines.forEach(l => allLinesSet.add(l)));
-    const allLines = Array.from(allLinesSet);
+    // MODIFICATION ICI: On ne garde QUE les lignes actuellement actives dans "knownLines"
+    const allLines = Array.from(knownLines);
 
     let nearbyLines = [];
     let otherLines = [];
 
     if (userPosition && allStopsGeo.length > 0) {
-        // Find stops within 500m and extract lines
         const nearbyStops = allStopsGeo
             .map(s => ({ ...s, dist: distanceMeters(userPosition.lat, userPosition.lng, s.lat, s.lng) }))
             .filter(s => s.dist <= 500);
 
-        // For each line, find the closest stop that serves it
-        const nearbyLinesMap = new Map(); // line → min distance
+        const nearbyLinesMap = new Map(); 
         nearbyStops.forEach(s => {
             s.lines.forEach(line => {
-                const prev = nearbyLinesMap.get(line) || Infinity;
-                if (s.dist < prev) nearbyLinesMap.set(line, s.dist);
+                // On ne garde que les lignes qui ont réellement des bus actifs
+                if (knownLines.has(line)) {
+                    const prev = nearbyLinesMap.get(line) || Infinity;
+                    if (s.dist < prev) nearbyLinesMap.set(line, s.dist);
+                }
             });
         });
 
-        // All nearby lines sorted by distance
         nearbyLines = Array.from(nearbyLinesMap.entries())
             .map(([line, minDist]) => ({ line, minDist }))
             .sort((a, b) => a.minDist - b.minDist);
 
         const nearbyLineNames = new Set(nearbyLines.map(l => l.line));
 
-        // Other lines = not nearby, sorted alphanumerically
         otherLines = allLines
             .filter(l => !nearbyLineNames.has(l))
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
             .map(line => ({ line, minDist: Infinity }));
     } else {
-        // No location → all lines in normal order
         otherLines = allLines
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
             .map(line => ({ line, minDist: Infinity }));
     }
 
-    // Helper to create a line button
     function makeLineBtn(line, distLabel) {
         const btn = document.createElement('button');
         btn.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
-        btn.innerHTML = distLabel 
-            ? `${line}<span class="line-dist">${distLabel}</span>` 
-            : line;
+        btn.innerHTML = distLabel ? `${line}<span class="line-dist">${distLabel}</span>` : line;
         btn.dataset.line = line;
         btn.onclick = () => {
             if (activeFilters.has(line)) activeFilters.delete(line);
@@ -354,12 +351,10 @@ document.getElementById('filter-btn').onclick = () => {
         return btn;
     }
 
-    // Section: nearby stops
     if (nearbyLines.length > 0) {
-        const count = allStopsGeo.filter(s => distanceMeters(userPosition.lat, userPosition.lng, s.lat, s.lng) <= 500).length;
         const header = document.createElement('div');
         header.className = 'filter-section-header';
-        header.innerHTML = `📍 À proximité <small>(${count} arrêts à < 500 m)</small>`;
+        header.innerHTML = `📍 Lignes actives proches`;
         list.appendChild(header);
 
         const nearbyGrid = document.createElement('div');
@@ -371,11 +366,10 @@ document.getElementById('filter-btn').onclick = () => {
         list.appendChild(nearbyGrid);
     }
 
-    // Section: all others
     if (otherLines.length > 0) {
         const header = document.createElement('div');
         header.className = 'filter-section-header';
-        header.innerHTML = nearbyLines.length > 0 ? '🚍 Autres lignes' : '🚍 Toutes les lignes';
+        header.innerHTML = nearbyLines.length > 0 ? '🚍 Autres lignes actives' : '🚍 Lignes actives en ce moment';
         list.appendChild(header);
 
         const otherGrid = document.createElement('div');
@@ -395,14 +389,10 @@ function syncUI() {
     
     document.querySelectorAll('.line-btn').forEach(b => {
         const line = b.dataset.line;
-        if (!line) {
-            b.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
-        } else {
-            b.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
-        }
+        if (!line) b.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
+        else b.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
     });
 
-    // Refresh stop markers to match active filters
     if (allStopsGeo.length > 0) buildStopsLayer();
 }
 

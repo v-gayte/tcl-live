@@ -92,7 +92,7 @@ app.get('/api/stops', async (req, res) => {
 // Route prochains passages pour un arrêt donné
 const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
 const arrivalsCache = new Map(); // stopId → { data, ts }
-const ARRIVALS_TTL = 20000; // 20 s
+const ARRIVALS_TTL = 10000; // 20 s
 
 app.get('/api/arrivals/:stopId', async (req, res) => {
     const stopId = parseInt(req.params.stopId, 10);

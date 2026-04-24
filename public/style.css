@@ -175,3 +175,27 @@ body, html {
     font-size: 1.6em; cursor: pointer; color: #aaa; line-height: 1;
 }
 .close-modal:hover { color: #333; }
+
+/* === NOUVEAU: Bouton de rafraichissement des arrêts === */
+.refresh-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.3em;
+    padding: 0 4px;
+    outline: none;
+    transition: transform 0.3s;
+    color: #555;
+}
+
+.refresh-btn:hover {
+    color: var(--tcl-red);
+}
+
+@keyframes spin {
+    100% { transform: rotate(360deg); }
+}
+
+.spin-anim {
+    animation: spin 0.5s linear;
+}
