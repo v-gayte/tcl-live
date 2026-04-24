@@ -48,30 +48,42 @@ app.get('/api/alerts', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erreur alertes" }); }
 });
 
-// Route pour le dictionnaire des arrêts
+// Route pour les arrêts (dictionnaire + données géographiques)
 app.get('/api/stops', async (req, res) => {
     if (stopsCache) return res.json(stopsCache);
     try {
-        console.log("⏳ Téléchargement du super-dictionnaire des arrêts...");
+        console.log("⏳ Téléchargement des arrêts...");
         let dict = {};
-        
-        // 1. On récupère les points d'arrêt
+        let geo = [];
+
+        // 1. Points d'arrêt (avec coordonnées et desserte)
         try {
             const resArrets = await fetch(STOPS_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
             const dataArrets = await resArrets.json();
-            (dataArrets.values || []).forEach(a => { dict[a.id] = a.nom; });
+            (dataArrets.values || []).forEach(a => {
+                dict[a.id] = a.nom;
+                if (a.lat && a.lon && a.desserte) {
+                    // Parse desserte: "21:A,JD183:A,JD35:R" → ["21","JD183","JD35"]
+                    const lines = [...new Set(
+                        a.desserte.split(',').map(d => d.split(':')[0].trim()).filter(Boolean)
+                    )];
+                    if (lines.length > 0) {
+                        geo.push({ id: a.id, nom: a.nom, lat: a.lat, lng: a.lon, lines });
+                    }
+                }
+            });
         } catch(e) { console.log("⚠️ Impossible de charger les points d'arrêt"); }
 
-        // 2. On récupère les zones d'arrêt (Crucial pour les destinations !)
+        // 2. Zones d'arrêt (pour résolution des noms de destination)
         try {
             const resZones = await fetch(ZONES_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
             const dataZones = await resZones.json();
             (dataZones.values || []).forEach(z => { dict[z.id] = z.nom; });
         } catch(e) { console.log("⚠️ Impossible de charger les zones d'arrêt"); }
         
-        stopsCache = dict;
-        console.log(`✅ Dictionnaire prêt avec ${Object.keys(dict).length} arrêts/zones !`);
-        res.json(dict);
+        stopsCache = { dict, geo };
+        console.log(`✅ ${Object.keys(dict).length} noms | ${geo.length} arrêts géolocalisés !`);
+        res.json(stopsCache);
     } catch (e) {
         res.status(500).json({ error: "Erreur arrêts" });
     }
