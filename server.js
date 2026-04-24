@@ -89,4 +89,43 @@ app.get('/api/stops', async (req, res) => {
     }
 });
 
+// Route prochains passages pour un arrêt donné
+const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
+const arrivalsCache = new Map(); // stopId → { data, ts }
+const ARRIVALS_TTL = 20000; // 20 s
+
+app.get('/api/arrivals/:stopId', async (req, res) => {
+    const stopId = parseInt(req.params.stopId, 10);
+    if (!stopId) return res.status(400).json({ error: 'stopId invalide' });
+
+    const cached = arrivalsCache.get(stopId);
+    if (cached && Date.now() - cached.ts < ARRIVALS_TTL) {
+        return res.json(cached.data);
+    }
+
+    try {
+        // The API doesn't support server-side filtering by stop id, so we fetch all and filter
+        const response = await fetch(ARRIVALS_URL, {
+            headers: { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' }
+        });
+        const raw = await response.json();
+        const passages = (raw.values || [])
+            .filter(p => p.id === stopId)
+            .map(p => ({
+                ligne:        p.ligne,
+                direction:    p.direction,
+                delai:        p.delaipassage,
+                heure:        p.heurepassage,
+                type:         p.type,  // T=théorique, R=temps-réel
+            }))
+            .sort((a, b) => new Date(a.heure) - new Date(b.heure));
+
+        const result = { stopId, passages };
+        arrivalsCache.set(stopId, { data: result, ts: Date.now() });
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: 'Erreur passages: ' + e.message });
+    }
+});
+
 app.listen(PORT, () => console.log(`🚀 Serveur PRO : http://localhost:${PORT}`));

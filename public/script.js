@@ -54,7 +54,6 @@ fetch('/api/stops')
         buildStopsLayer();
     }).catch(e => console.error("⚠️ Erreur chargement arrêts:", e));
 
-let proximityCircle = null; // dashed 500m circle around user
 
 // --- DISTANCE (Haversine) — déclaré tôt, utilisé par buildStopsLayer ---
 function distanceMeters(lat1, lng1, lat2, lng2) {
@@ -67,33 +66,73 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Build stop markers on the map
+// Build stop markers — shows only stops serving active filters (or all if no filter)
 function buildStopsLayer() {
     stopsLayer.clearLayers();
+
     allStopsGeo.forEach(stop => {
-        const isNearby = userPosition &&
-            distanceMeters(userPosition.lat, userPosition.lng, stop.lat, stop.lng) <= 500;
+        // If filters are active, only show stops that serve at least one selected line
+        if (activeFilters.size > 0 && !stop.lines.some(l => activeFilters.has(l))) return;
 
         const m = L.circleMarker([stop.lat, stop.lng], {
-            radius:      isNearby ? 6 : 4,
-            fillColor:   isNearby ? '#E2001A' : '#555',
-            color:       '#fff',
-            weight:      isNearby ? 2 : 1,
-            fillOpacity: isNearby ? 0.9 : 0.55,
-            opacity:     0.9,
-            zIndexOffset: isNearby ? 100 : 0,
+            radius: 4, fillColor: '#555', color: '#fff',
+            weight: 1, fillOpacity: 0.6, opacity: 0.9,
         });
 
         const linesHtml = stop.lines
-            .map(l => `<span style="display:inline-block;background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.8em;font-weight:700;">${l}</span>`)
+            .map(l => {
+                const active = activeFilters.size === 0 || activeFilters.has(l);
+                return `<span style="display:inline-block;background:${active ? '#E2001A' : '#999'};color:#fff;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.8em;font-weight:700;">${l}</span>`;
+            })
             .join('');
 
+        // Popup skeleton — arrivals injected async on open
+        const popupId = `arrivals-${stop.id}`;
         m.bindPopup(`
-            <div style="min-width:140px;">
+            <div style="min-width:200px;">
                 <b style="font-size:1em;">${stop.nom}</b>
-                ${isNearby ? '<span style="float:right;font-size:0.75em;color:#E2001A;">📍 < 500 m</span>' : ''}
-                <br><div style="margin-top:6px;">${linesHtml}</div>
-            </div>`);
+                <div style="margin-top:6px;">${linesHtml}</div>
+                <hr style="border:0;border-top:1px solid #eee;margin:8px 0;">
+                <div id="${popupId}" style="font-size:0.85em;color:#555;">
+                    ⏳ Chargement des passages…
+                </div>
+            </div>`, { maxWidth: 280 });
+
+        // Lazy-fetch arrivals when popup opens
+        m.on('popupopen', async () => {
+            const el = document.getElementById(popupId);
+            if (!el) return;
+            try {
+                const res = await fetch(`/api/arrivals/${stop.id}`);
+                const data = await res.json();
+                const passages = data.passages || [];
+                if (passages.length === 0) {
+                    el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
+                    return;
+                }
+                el.innerHTML = passages.slice(0, 6).map(p => {
+                    const isRT = p.type === 'R';
+                    const delaiStyle = isRT
+                        ? 'color:#E2001A;font-weight:700;'
+                        : 'color:#777;';
+                    const rtBadge = isRT
+                        ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>'
+                        : '';
+                    // Format "2026-04-24 16:25:00" → "16:25"
+                    const heure = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
+                    return `
+                        <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f0f0f0;">
+                            <span style="background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;font-weight:700;font-size:0.85em;white-space:nowrap;">${p.ligne}</span>
+                            <span style="flex:1;color:#333;font-size:0.85em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.direction}">${p.direction}</span>
+                            <span style="${delaiStyle}white-space:nowrap;">${p.delai}${rtBadge}</span>
+                            <span style="color:#aaa;font-size:0.8em;white-space:nowrap;">${heure}</span>
+                        </div>`;
+                }).join('');
+            } catch (e) {
+                if (el) el.innerHTML = '<i style="color:#c00;">Erreur de chargement</i>';
+            }
+        });
+
         stopsLayer.addLayer(m);
     });
     toggleStopsVisibility();
@@ -112,8 +151,6 @@ map.on('zoomend', toggleStopsVisibility);
 document.getElementById('locate-btn').onclick = () => map.locate({ setView: true, maxZoom: 16 });
 map.on('locationfound', (e) => {
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
-
-    // Update or create user position marker
     if (!userMarker) {
         userMarker = L.circleMarker(e.latlng, {
             radius: 8, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
@@ -121,18 +158,7 @@ map.on('locationfound', (e) => {
     } else {
         userMarker.setLatLng(e.latlng);
     }
-
-    // Draw/update 500m proximity circle
-    if (proximityCircle) map.removeLayer(proximityCircle);
-    proximityCircle = L.circle(e.latlng, {
-        radius: 500,
-        color: '#007bff', weight: 1.5,
-        dashArray: '6 5',
-        fillColor: '#007bff', fillOpacity: 0.04,
-    }).addTo(map);
-
-    // Rebuild stops to update nearby highlighting
-    if (allStopsGeo.length > 0) buildStopsLayer();
+    // Position stored silently — used for proximity sort in the filter
 });
 
 
@@ -368,14 +394,16 @@ function syncUI() {
     mainBtn.innerText = activeFilters.size === 0 ? '🚍 Filtrer' : `🚍 ${activeFilters.size} sélectionnés`;
     
     document.querySelectorAll('.line-btn').forEach(b => {
-        const line = b.dataset.line; // uses data-line attribute
+        const line = b.dataset.line;
         if (!line) {
-            // "Toutes" button has no data-line
             b.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
         } else {
             b.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
         }
     });
+
+    // Refresh stop markers to match active filters
+    if (allStopsGeo.length > 0) buildStopsLayer();
 }
 
 // --- ALERTES ---
