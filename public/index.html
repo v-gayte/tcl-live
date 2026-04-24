@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>TCL Live</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="status-bar">
+        <span id="brand">TCL Live</span>
+        <div id="controls">
+            <button id="filter-btn" class="ui-button">🚍 Filtrer</button>
+            <button id="alert-btn" class="ui-button">⚠️ Alertes</button>
+            <button id="locate-btn" class="ui-button">📍</button>
+        </div>
+        <span id="update-text">...</span>
+    </div>
+
+    <div id="map"></div>
+
+    <div id="alert-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal" id="close-alerts">&times;</span>
+            <h2>Alertes Trafic</h2>
+            <div id="alert-list"></div>
+        </div>
+    </div>
+
+    <div id="filter-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal" id="close-filters">&times;</span>
+            <h2>Choisir les lignes</h2>
+            <div id="filter-list"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
