@@ -1,8 +1,5 @@
 const map = L.map('map', { zoomControl: false }).setView([45.76, 4.83], 13);
-
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap'
-}).addTo(map);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap' }).addTo(map);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const busLayer    = L.layerGroup().addTo(map);
@@ -137,15 +134,12 @@ function buildStopsLayer() {
         m.bindPopup(`
             <div style="min-width:200px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <b style="font-size:1.1em;">${stop.nom}</b>
-                    <button id="refresh-stop-${stop.id}" class="refresh-btn" title="Rafraîchir">🔄</button>
+                    <b>${stop.nom}</b>
+                    <button id="refresh-stop-${stop.id}" class="refresh-btn">🔄</button>
                 </div>
-                <div style="margin-top:6px;">${linesHtml}</div>
                 <hr style="border:0;border-top:1px solid #eee;margin:8px 0;">
-                <div id="${popupId}" style="font-size:0.85em;color:#555;">
-                    ⏳ Chargement des passages…
-                </div>
-            </div>`, { maxWidth: 280 });
+                <div id="${popupId}">⏳ Chargement...</div>
+            </div>`);
 
         m.on('popupopen', () => {
             const el  = document.getElementById(popupId);
@@ -213,18 +207,13 @@ function filterStopsVisibility() {
 }
 
 function toggleStopsVisibility() {
-    if (map.getZoom() >= 14) {
-        if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer);
-    } else {
-        if (map.hasLayer(stopsLayer)) map.removeLayer(stopsLayer);
-    }
+    if (map.getZoom() >= 14) { if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer); }
+    else { if (map.hasLayer(stopsLayer)) map.removeLayer(stopsLayer); }
 }
 map.on('zoomend', toggleStopsVisibility);
 
-// --- GÉOLOCALISATION EN TEMPS RÉEL ---
-let isTrackingLocation = false;
-let firstLocationFound = false;
-
+// Géolocalisation
+let isTracking = false;
 document.getElementById('locate-btn').onclick = () => {
     if (!isTrackingLocation) {
         isTrackingLocation = true;
@@ -238,7 +227,6 @@ document.getElementById('locate-btn').onclick = () => {
         }
     }
 };
-
 map.on('locationfound', (e) => {
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
     if (!userMarker) {
@@ -283,7 +271,7 @@ async function updateBuses() {
             const journey = v.MonitoredVehicleJourney;
             const line    = formatLine(journey.LineRef.value);
             knownLines.add(line);
-
+            
             if (activeFilters.size > 0 && !activeFilters.has(line)) return;
 
             const lat = journey.VehicleLocation.Latitude;
@@ -300,23 +288,14 @@ async function updateBuses() {
             const size    = isZoomedOut ? 16 : 32;
             const text    = isZoomedOut ? '' : line;
             const ARROW_H = isZoomedOut ? 0 : 12;
-            const wrapperW = size;
-            const wrapperH = size + ARROW_H;
+            const size = isZoomedOut ? 16 : 32;
+            const arrowSVG = hasBearing && !isZoomedOut ? `<div style="position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(${bearing}deg);transform-origin:center ${ARROW_H + size / 2}px;"><svg width="12" height="${ARROW_H + 2}"><polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}" fill="white" stroke="#E2001A" stroke-width="1.5"/></svg></div>` : '';
 
-            const arrowSVG = hasBearing && !isZoomedOut ? `
-                <div class="bus-arrow" style="transform: translateX(-50%) rotate(${bearing}deg); transform-origin: center ${ARROW_H + size / 2}px;">
-                    <svg width="12" height="${ARROW_H + 2}" viewBox="0 0 12 ${ARROW_H + 2}" xmlns="http://www.w3.org/2000/svg">
-                        <polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}" fill="white" stroke="#E2001A" stroke-width="1.5" stroke-linejoin="round"/>
-                    </svg>
-                </div>` : '';
-
-            const fontSize = line.length > 2 ? '10px' : line.length > 1 ? '12px' : '14px';
-
-            const busIcon = L.divIcon({
+            const icon = L.divIcon({
                 className: 'custom-bus-icon',
-                html: `<div style="position:relative; width:${wrapperW}px; height:${wrapperH}px; overflow:visible;">
+                html: `<div style="position:relative; width:${size}px; height:${size + ARROW_H}px; overflow:visible;">
                         ${arrowSVG}
-                        <div class="bus-bubble" style="top:${ARROW_H}px;"><span style="font-size:${fontSize}; line-height:1;">${text}</span></div>
+                        <div class="bus-bubble" style="position:absolute;top:${ARROW_H}px;background:#E2001A;color:#fff;border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:${isZoomedOut?'0':(line.length>2?'10px':'12px')};font-weight:bold;border:2px solid #fff;">${isZoomedOut?'':line}</div>
                     </div>`,
                 iconSize:   [wrapperW, wrapperH],
                 iconAnchor: [wrapperW / 2, wrapperH - size / 2],
