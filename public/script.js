@@ -214,6 +214,8 @@ map.on('zoomend', toggleStopsVisibility);
 
 // Géolocalisation
 let isTracking = false;
+let isTrackingLocation = false;
+let firstLocationFound = false;
 document.getElementById('locate-btn').onclick = () => {
     if (!isTrackingLocation) {
         isTrackingLocation = true;
@@ -286,14 +288,14 @@ async function updateBuses() {
 
             const isZoomedOut = currentZoom < 14;
             const size    = isZoomedOut ? 16 : 32;
-            const text    = isZoomedOut ? '' : line;
             const ARROW_H = isZoomedOut ? 0 : 12;
-            const size = isZoomedOut ? 16 : 32;
+            const wrapperW = size;
+            const wrapperH = size + ARROW_H;
             const arrowSVG = hasBearing && !isZoomedOut ? `<div style="position:absolute;top:0;left:50%;transform:translateX(-50%) rotate(${bearing}deg);transform-origin:center ${ARROW_H + size / 2}px;"><svg width="12" height="${ARROW_H + 2}"><polygon points="6,0 10,${ARROW_H + 2} 2,${ARROW_H + 2}" fill="white" stroke="#E2001A" stroke-width="1.5"/></svg></div>` : '';
 
-            const icon = L.divIcon({
+            const busIcon = L.divIcon({
                 className: 'custom-bus-icon',
-                html: `<div style="position:relative; width:${size}px; height:${size + ARROW_H}px; overflow:visible;">
+                html: `<div style="position:relative; width:${wrapperW}px; height:${wrapperH}px; overflow:visible;">
                         ${arrowSVG}
                         <div class="bus-bubble" style="position:absolute;top:${ARROW_H}px;background:#E2001A;color:#fff;border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:${isZoomedOut?'0':(line.length>2?'10px':'12px')};font-weight:bold;border:2px solid #fff;">${isZoomedOut?'':line}</div>
                     </div>`,
