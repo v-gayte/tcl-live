@@ -6,7 +6,7 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
 const busLayer = L.layerGroup().addTo(map);
-const routesLayer = L.layerGroup().addTo(map); 
+const routesLayer = L.layerGroup().addTo(map); // Calque pour les tracés
 
 let userMarker = null;
 let userPosition = null; 
@@ -18,29 +18,16 @@ let busPositionsByLine = {};
 let dictStops = {};
 let allStopsGeo = [];   
 const stopsLayer = L.layerGroup(); 
-let currentStopInterval = null; // Gestion du rafraîchissement auto des popups
+let currentStopInterval = null; 
+let allRoutesData = { bus: [], tram: [] }; // Stockage des tracés WFS
 
-// 1. Charger et afficher les tracés des BUS
-fetch('/bus.geojson')
-    .then(async res => {
-        if (!res.ok) throw new Error("Fichier bus.geojson introuvable");
-        const data = await res.json();
-        L.geoJSON(data, {
-            style: { color: '#888888', weight: 2, opacity: 0.3 },
-            interactive: false
-        }).addTo(routesLayer);
-    }).catch(e => console.error("⚠️ Erreur Bus GeoJSON:", e));
-
-// 2. Charger et afficher les tracés des TRAMS
-fetch('/tram.geojson')
-    .then(async res => {
-        if (!res.ok) throw new Error("Fichier tram.geojson introuvable");
-        const data = await res.json();
-        L.geoJSON(data, {
-            style: { color: '#E2001A', weight: 3, opacity: 0.5 },
-            interactive: false
-        }).addTo(routesLayer);
-    }).catch(e => console.error("⚠️ Erreur Tram GeoJSON:", e));
+// 1 & 2. Charger les TRACÉS depuis l'API WFS
+fetch('/api/routes')
+    .then(res => res.json())
+    .then(data => {
+        allRoutesData = data;
+        drawFilteredRoutes(); 
+    }).catch(e => console.error("⚠️ Erreur tracés:", e));
 
 // 3. Charger les arrêts (dictionnaire + géo)
 fetch('/api/stops')
@@ -50,6 +37,30 @@ fetch('/api/stops')
         allStopsGeo = data.geo || [];
         buildStopsLayer();
     }).catch(e => console.error("⚠️ Erreur chargement arrêts:", e));
+
+// Fonction pour dessiner/masquer dynamiquement les tracés
+function drawFilteredRoutes() {
+    routesLayer.clearLayers();
+    
+    const draw = (features, color, weight, opacity) => {
+        features.forEach(feature => {
+            const props = feature.properties;
+            const lineName = props.ligne || props.code_ligne || props.nom; 
+            
+            // Masquer si on utilise des filtres et que la ligne n'est pas sélectionnée
+            if (activeFilters.size > 0 && !activeFilters.has(lineName)) return;
+
+            L.geoJSON(feature, {
+                style: { color, weight, opacity },
+                interactive: false
+            }).addTo(routesLayer);
+        });
+    };
+
+    // On garde exactement tes styles d'origine
+    draw(allRoutesData.bus, '#888888', 2, 0.3);
+    draw(allRoutesData.tram, '#E2001A', 3, 0.5);
+}
 
 function distanceMeters(lat1, lng1, lat2, lng2) {
     const R = 6371000;
@@ -61,16 +72,15 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Construction des marqueurs d'arrêts (Taille augmentée)
+// Build stop markers
 function buildStopsLayer() {
     stopsLayer.clearLayers();
 
     allStopsGeo.forEach(stop => {
         if (activeFilters.size > 0 && !stop.lines.some(l => activeFilters.has(l))) return;
 
-        // TAILLE AUGMENTÉE (radius 8 au lieu de 4)
         const m = L.circleMarker([stop.lat, stop.lng], {
-            radius: 8, fillColor: '#555', color: '#fff',
+            radius: 6, fillColor: '#555', color: '#fff',
             weight: 2, fillOpacity: 0.6, opacity: 0.9,
         });
 
@@ -82,7 +92,6 @@ function buildStopsLayer() {
 
         const popupId = `arrivals-${stop.id}`;
         
-        // Ajout du bouton de rafraîchissement 🔄
         m.bindPopup(`
             <div style="min-width:200px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -102,7 +111,7 @@ function buildStopsLayer() {
             
             const fetchArrivals = async () => {
                 if (!el) return;
-                if (btn) btn.classList.add('spin-anim'); // Animation visuelle
+                if (btn) btn.classList.add('spin-anim');
                 try {
                     const res = await fetch(`/api/arrivals/${stop.id}`);
                     const data = await res.json();
@@ -131,9 +140,8 @@ function buildStopsLayer() {
             };
 
             fetchArrivals();
-            if (btn) btn.onclick = fetchArrivals; // Sur le clic du bouton
+            if (btn) btn.onclick = fetchArrivals; 
 
-            // Rafraîchissement automatique toutes les 15s
             if (currentStopInterval) clearInterval(currentStopInterval);
             currentStopInterval = setInterval(fetchArrivals, 15000);
         });
@@ -165,14 +173,12 @@ let firstLocationFound = false;
 
 document.getElementById('locate-btn').onclick = () => {
     if (!isTrackingLocation) {
-        // Premier appui : On active le suivi continu
         isTrackingLocation = true;
         document.getElementById('locate-btn').style.color = 'var(--tcl-red)'; 
         map.locate({ watch: true, setView: false, enableHighAccuracy: true });
         
         if (userPosition) map.setView([userPosition.lat, userPosition.lng], 16);
     } else {
-        // Appuis suivants : On recentre juste la vue sur la position actuelle
         if (userPosition) {
             map.setView([userPosition.lat, userPosition.lng], 16);
         }
@@ -186,10 +192,9 @@ map.on('locationfound', (e) => {
             radius: 8, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
         }).addTo(map);
     } else {
-        userMarker.setLatLng(e.latlng); // Mise à jour de la position sans recentrer de force la carte
+        userMarker.setLatLng(e.latlng); 
     }
     
-    // On recentre automatiquement UNIQUEMENT lors du tout premier fix GPS
     if (!firstLocationFound && isTrackingLocation) {
         map.setView(e.latlng, 16);
         firstLocationFound = true;
@@ -299,7 +304,6 @@ document.getElementById('filter-btn').onclick = () => {
     };
     list.appendChild(btnAll);
 
-    // MODIFICATION ICI: On ne garde QUE les lignes actuellement actives dans "knownLines"
     const allLines = Array.from(knownLines);
 
     let nearbyLines = [];
@@ -313,7 +317,6 @@ document.getElementById('filter-btn').onclick = () => {
         const nearbyLinesMap = new Map(); 
         nearbyStops.forEach(s => {
             s.lines.forEach(line => {
-                // On ne garde que les lignes qui ont réellement des bus actifs
                 if (knownLines.has(line)) {
                     const prev = nearbyLinesMap.get(line) || Infinity;
                     if (s.dist < prev) nearbyLinesMap.set(line, s.dist);
@@ -394,6 +397,9 @@ function syncUI() {
     });
 
     if (allStopsGeo.length > 0) buildStopsLayer();
+    
+    // NOUVEAUTÉ : Mise à jour des tracés avec le filtre
+    if (allRoutesData.bus.length > 0) drawFilteredRoutes();
 }
 
 // --- ALERTES ---

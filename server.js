@@ -17,13 +17,43 @@ const ALERTS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral
 const STOPS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclarret/all.json?maxfeatures=-1";
 const ZONES_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclzonearret/all.json?maxfeatures=-1";
 
+// Flux cartographiques WFS
+const BUS_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignebus_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+const TRAM_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignetram_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+
 const USERNAME = process.env.API_USER?.trim();
 const PASSWORD = process.env.API_PASSWORD?.trim();
 const credentials = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 
 let busCache = null;
 let stopsCache = null;
+let routesCache = null;
 let busLastFetch = 0;
+
+// API Tracés WFS
+app.get('/api/routes', async (req, res) => {
+    if (routesCache) return res.json(routesCache);
+    try {
+        console.log("⏳ Chargement des tracés via WFS...");
+        const [resBus, resTram] = await Promise.all([
+            fetch(BUS_ROUTES_URL),
+            fetch(TRAM_ROUTES_URL)
+        ]);
+        
+        const busData = await resBus.json();
+        const tramData = await resTram.json();
+
+        routesCache = {
+            bus: busData.features || [],
+            tram: tramData.features || []
+        };
+        console.log(`✅ Tracés chargés : ${routesCache.bus.length} bus, ${routesCache.tram.length} trams.`);
+        res.json(routesCache);
+    } catch (e) { 
+        console.error("⚠️ Erreur tracés WFS:", e);
+        res.status(500).json({ error: "Erreur tracés" }); 
+    }
+});
 
 app.get('/api/buses', async (req, res) => {
     const now = Date.now();
@@ -48,22 +78,18 @@ app.get('/api/alerts', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erreur alertes" }); }
 });
 
-// Route pour les arrêts (dictionnaire + données géographiques)
 app.get('/api/stops', async (req, res) => {
     if (stopsCache) return res.json(stopsCache);
     try {
-        console.log("⏳ Téléchargement des arrêts...");
         let dict = {};
         let geo = [];
 
-        // 1. Points d'arrêt (avec coordonnées et desserte)
         try {
             const resArrets = await fetch(STOPS_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
             const dataArrets = await resArrets.json();
             (dataArrets.values || []).forEach(a => {
                 dict[a.id] = a.nom;
                 if (a.lat && a.lon && a.desserte) {
-                    // Parse desserte: "21:A,JD183:A,JD35:R" → ["21","JD183","JD35"]
                     const lines = [...new Set(
                         a.desserte.split(',').map(d => d.split(':')[0].trim()).filter(Boolean)
                     )];
@@ -72,27 +98,24 @@ app.get('/api/stops', async (req, res) => {
                     }
                 }
             });
-        } catch(e) { console.log("⚠️ Impossible de charger les points d'arrêt"); }
+        } catch(e) {}
 
-        // 2. Zones d'arrêt (pour résolution des noms de destination)
         try {
             const resZones = await fetch(ZONES_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
             const dataZones = await resZones.json();
             (dataZones.values || []).forEach(z => { dict[z.id] = z.nom; });
-        } catch(e) { console.log("⚠️ Impossible de charger les zones d'arrêt"); }
+        } catch(e) {}
         
         stopsCache = { dict, geo };
-        console.log(`✅ ${Object.keys(dict).length} noms | ${geo.length} arrêts géolocalisés !`);
         res.json(stopsCache);
     } catch (e) {
         res.status(500).json({ error: "Erreur arrêts" });
     }
 });
 
-// Route prochains passages pour un arrêt donné
 const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
-const arrivalsCache = new Map(); // stopId → { data, ts }
-const ARRIVALS_TTL = 10000; // 20 s
+const arrivalsCache = new Map(); 
+const ARRIVALS_TTL = 10000; // 10 s
 
 app.get('/api/arrivals/:stopId', async (req, res) => {
     const stopId = parseInt(req.params.stopId, 10);
@@ -104,7 +127,6 @@ app.get('/api/arrivals/:stopId', async (req, res) => {
     }
 
     try {
-        // The API doesn't support server-side filtering by stop id, so we fetch all and filter
         const response = await fetch(ARRIVALS_URL, {
             headers: { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' }
         });
@@ -116,7 +138,7 @@ app.get('/api/arrivals/:stopId', async (req, res) => {
                 direction:    p.direction,
                 delai:        p.delaipassage,
                 heure:        p.heurepassage,
-                type:         p.type,  // T=théorique, R=temps-réel
+                type:         p.type,
             }))
             .sort((a, b) => new Date(a.heure) - new Date(b.heure));
 
