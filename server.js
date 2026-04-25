@@ -2,35 +2,53 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const compression = require('compression');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// [OPT #6] Gzip compression — réduit la taille des réponses JSON de ~60-70%
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const BUSES_URL = "https://data.grandlyon.com/siri-lite/2.0/vehicle-monitoring.json";
-const ALERTS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclalertetrafic_2/all.json?maxfeatures=-1&start=1";
-
-// URL des points d'arrêts TCL
-const STOPS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclarret/all.json?maxfeatures=-1";
-const ZONES_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclzonearret/all.json?maxfeatures=-1";
-
-// Flux cartographiques WFS
-const BUS_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignebus_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+const BUSES_URL   = "https://data.grandlyon.com/siri-lite/2.0/vehicle-monitoring.json";
+const ALERTS_URL  = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclalertetrafic_2/all.json?maxfeatures=-1&start=1";
+const STOPS_URL   = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclarret/all.json?maxfeatures=-1";
+const ZONES_URL   = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclzonearret/all.json?maxfeatures=-1";
+const BUS_ROUTES_URL  = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignebus_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
 const TRAM_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignetram_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
 
-const USERNAME = process.env.API_USER?.trim();
-const PASSWORD = process.env.API_PASSWORD?.trim();
+const USERNAME    = process.env.API_USER?.trim();
+const PASSWORD    = process.env.API_PASSWORD?.trim();
 const credentials = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
+const AUTH_HEADER = { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' };
 
-let busCache = null;
-let stopsCache = null;
-let routesCache = null;
-let busLastFetch = 0;
+// --- CACHES ---
+let busCache        = null;
+let busLastFetch    = 0;
+const BUS_TTL       = 15000; // 15s
 
-// API Tracés WFS
+let stopsCache      = null;
+
+let routesCache     = null;
+
+// [OPT #2] Cache pour les alertes (changent rarement)
+let alertsCache     = null;
+let alertsLastFetch = 0;
+const ALERTS_TTL    = 2 * 60 * 1000; // 2 min
+
+// [OPT #1] Cache GLOBAL pour tous les passages (au lieu d'un cache par arrêt)
+// On télécharge le fichier complet une fois, et on sert chaque arrêt depuis la mémoire
+let allArrivalsCache   = null;
+let allArrivalsFetchTs = 0;
+const ALL_ARRIVALS_TTL = 15000; // 15s — même fréquence que les bus
+
+// --- ROUTES API ---
+
+// Tracés WFS (bus + tram) — mis en cache indéfiniment (données stables)
 app.get('/api/routes', async (req, res) => {
     if (routesCache) return res.json(routesCache);
     try {
@@ -39,53 +57,53 @@ app.get('/api/routes', async (req, res) => {
             fetch(BUS_ROUTES_URL),
             fetch(TRAM_ROUTES_URL)
         ]);
-        
-        const busData = await resBus.json();
+        const busData  = await resBus.json();
         const tramData = await resTram.json();
-
         routesCache = {
-            bus: busData.features || [],
+            bus:  busData.features  || [],
             tram: tramData.features || []
         };
         console.log(`✅ Tracés chargés : ${routesCache.bus.length} bus, ${routesCache.tram.length} trams.`);
         res.json(routesCache);
-    } catch (e) { 
+    } catch (e) {
         console.error("⚠️ Erreur tracés WFS:", e);
-        res.status(500).json({ error: "Erreur tracés" }); 
+        res.status(500).json({ error: "Erreur tracés" });
     }
 });
 
+// Positions des bus — rafraîchies toutes les 15s
 app.get('/api/buses', async (req, res) => {
     const now = Date.now();
-    if (busCache && (now - busLastFetch < 15000)) return res.json(busCache);
+    if (busCache && (now - busLastFetch < BUS_TTL)) return res.json(busCache);
     try {
-        const response = await fetch(BUSES_URL, {
-            headers: { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' }
-        });
+        const response = await fetch(BUSES_URL, { headers: AUTH_HEADER });
         busCache = await response.json();
         busLastFetch = now;
         res.json(busCache);
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// [OPT #2] Alertes trafic — cache 2 minutes
 app.get('/api/alerts', async (req, res) => {
+    const now = Date.now();
+    if (alertsCache && (now - alertsLastFetch < ALERTS_TTL)) return res.json(alertsCache);
     try {
-        const response = await fetch(ALERTS_URL, {
-            headers: { 'Authorization': `Basic ${credentials}` }
-        });
-        const data = await response.json();
-        res.json(data);
+        const response = await fetch(ALERTS_URL, { headers: AUTH_HEADER });
+        alertsCache = await response.json();
+        alertsLastFetch = now;
+        res.json(alertsCache);
     } catch (e) { res.status(500).json({ error: "Erreur alertes" }); }
 });
 
+// Arrêts (dictionnaire nom + géolocalisation) — mis en cache indéfiniment au démarrage
 app.get('/api/stops', async (req, res) => {
     if (stopsCache) return res.json(stopsCache);
     try {
         let dict = {};
-        let geo = [];
+        let geo  = [];
 
         try {
-            const resArrets = await fetch(STOPS_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
+            const resArrets  = await fetch(STOPS_URL, { headers: AUTH_HEADER });
             const dataArrets = await resArrets.json();
             (dataArrets.values || []).forEach(a => {
                 dict[a.id] = a.nom;
@@ -101,11 +119,11 @@ app.get('/api/stops', async (req, res) => {
         } catch(e) {}
 
         try {
-            const resZones = await fetch(ZONES_URL, { headers: { 'Authorization': `Basic ${credentials}` } });
+            const resZones  = await fetch(ZONES_URL, { headers: AUTH_HEADER });
             const dataZones = await resZones.json();
             (dataZones.values || []).forEach(z => { dict[z.id] = z.nom; });
         } catch(e) {}
-        
+
         stopsCache = { dict, geo };
         res.json(stopsCache);
     } catch (e) {
@@ -113,41 +131,81 @@ app.get('/api/stops', async (req, res) => {
     }
 });
 
-const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
-const arrivalsCache = new Map(); 
-const ARRIVALS_TTL = 10000; // 10 s
+// [OPT #1 v2] Cache global des passages — rafraîchissement PROACTIF en arrière-plan
+// Le serveur maintient le cache automatiquement à jour toutes les 15s.
+// Chaque clic sur un arrêt est servi depuis la mémoire : zéro attente réseau.
+
+async function refreshAllArrivals() {
+    try {
+        const response = await fetch(ARRIVALS_URL, { headers: AUTH_HEADER });
+        allArrivalsCache   = await response.json();
+        allArrivalsFetchTs = Date.now();
+    } catch (e) {
+        console.warn('⚠️ Rafraîchissement passages échoué:', e.message);
+    }
+}
 
 app.get('/api/arrivals/:stopId', async (req, res) => {
     const stopId = parseInt(req.params.stopId, 10);
     if (!stopId) return res.status(400).json({ error: 'stopId invalide' });
 
-    const cached = arrivalsCache.get(stopId);
-    if (cached && Date.now() - cached.ts < ARRIVALS_TTL) {
-        return res.json(cached.data);
-    }
-
     try {
-        const response = await fetch(ARRIVALS_URL, {
-            headers: { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' }
-        });
-        const raw = await response.json();
-        const passages = (raw.values || [])
+        // Si le cache n'est pas encore prêt (tout début de vie du serveur), on attend
+        if (!allArrivalsCache) await refreshAllArrivals();
+
+        const passages = (allArrivalsCache.values || [])
             .filter(p => p.id === stopId)
             .map(p => ({
-                ligne:        p.ligne,
-                direction:    p.direction,
-                delai:        p.delaipassage,
-                heure:        p.heurepassage,
-                type:         p.type,
+                ligne:     p.ligne,
+                direction: p.direction,
+                delai:     p.delaipassage,
+                heure:     p.heurepassage,
+                type:      p.type,
             }))
             .sort((a, b) => new Date(a.heure) - new Date(b.heure));
 
-        const result = { stopId, passages };
-        arrivalsCache.set(stopId, { data: result, ts: Date.now() });
-        res.json(result);
+        res.json({ stopId, passages });
     } catch (e) {
         res.status(500).json({ error: 'Erreur passages: ' + e.message });
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur PRO : http://localhost:${PORT}`));
+app.listen(PORT, async () => {
+    console.log(`🚀 Serveur PRO : http://localhost:${PORT}`);
+
+    // 1. Pré-chargement des arrêts (dictionnaire + géo)
+    try {
+        console.log("⏳ Téléchargement des arrêts...");
+        const resArrets  = await fetch(STOPS_URL, { headers: AUTH_HEADER });
+        const dataArrets = await resArrets.json();
+        let dict = {}, geo = [];
+        (dataArrets.values || []).forEach(a => {
+            dict[a.id] = a.nom;
+            if (a.lat && a.lon && a.desserte) {
+                const lines = [...new Set(
+                    a.desserte.split(',').map(d => d.split(':')[0].trim()).filter(Boolean)
+                )];
+                if (lines.length > 0) geo.push({ id: a.id, nom: a.nom, lat: a.lat, lng: a.lon, lines });
+            }
+        });
+        try {
+            const resZones  = await fetch(ZONES_URL, { headers: AUTH_HEADER });
+            const dataZones = await resZones.json();
+            (dataZones.values || []).forEach(z => { dict[z.id] = z.nom; });
+        } catch(e) {}
+        stopsCache = { dict, geo };
+        console.log(`✅ ${Object.keys(dict).length} noms | ${geo.length} arrêts géolocalisés !`);
+    } catch(e) {
+        console.warn("⚠️ Pré-chargement arrêts échoué, sera chargé à la première requête.", e.message);
+    }
+
+    // 2. Pré-chargement des passages (arrivals) — le cache sera chaud dès le 1er clic
+    console.log("⏳ Pré-chargement des passages en cours...");
+    await refreshAllArrivals();
+    console.log(`✅ Cache passages prêt (${(allArrivalsCache?.values?.length || 0)} entrées) !`);
+
+    // 3. Rafraîchissement proactif en arrière-plan toutes les 15s
+    // L'utilisateur ne verra jamais de délai réseau sur les clics d'arrêts
+    setInterval(refreshAllArrivals, ALL_ARRIVALS_TTL);
+    console.log(`🔄 Rafraîchissement automatique des passages toutes les ${ALL_ARRIVALS_TTL / 1000}s activé.`);
+});

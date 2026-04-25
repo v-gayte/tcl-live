@@ -5,49 +5,63 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r
 }).addTo(map);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-const busLayer = L.layerGroup().addTo(map);
-const routesLayer = L.layerGroup().addTo(map); // Calque pour les tracés
+const busLayer    = L.layerGroup().addTo(map);
+const routesLayer = L.layerGroup().addTo(map);
 
-let userMarker = null;
-let userPosition = null; 
-let activeFilters = new Set();
-let knownLines = new Set();
-let busPositionsByLine = {};  
+let userMarker   = null;
+let userPosition = null;
+let activeFilters   = new Set();
+let knownLines      = new Set();
+let busPositionsByLine = {};
 
 // --- DONNÉES STATIQUES ---
-let dictStops = {};
-let allStopsGeo = [];   
-const stopsLayer = L.layerGroup(); 
-let currentStopInterval = null; 
-let allRoutesData = { bus: [], tram: [] }; // Stockage des tracés WFS
+let dictStops   = {};
+let allStopsGeo = [];
+const stopsLayer = L.layerGroup();
+let currentStopInterval = null;
+let allRoutesData = { bus: [], tram: [] };
 
-// 1 & 2. Charger les TRACÉS depuis l'API WFS
-fetch('/api/routes')
-    .then(res => res.json())
-    .then(data => {
-        allRoutesData = data;
-        drawFilteredRoutes(); 
-    }).catch(e => console.error("⚠️ Erreur tracés:", e));
+// [OPT #4] Tableau des marqueurs d'arrêts créés une seule fois
+// On évite de recréer ~9800 objets Leaflet à chaque changement de filtre
+let allStopMarkers = []; // chaque entrée : { marker, stop }
 
-// 3. Charger les arrêts (dictionnaire + géo)
+// --- CHARGEMENT DES DONNÉES ---
+
+// Arrêts : chargés immédiatement (donnée critique pour l'affichage et les popups)
 fetch('/api/stops')
     .then(res => res.json())
     .then(data => {
-        dictStops = data.dict || data;  
-        allStopsGeo = data.geo || [];
+        dictStops   = data.dict || data;
+        allStopsGeo = data.geo  || [];
         buildStopsLayer();
     }).catch(e => console.error("⚠️ Erreur chargement arrêts:", e));
 
-// Fonction pour dessiner/masquer dynamiquement les tracés
+// [OPT #3] Tracés WFS : chargement différé (lazy) pour ne pas bloquer le rendu initial
+// requestIdleCallback attend que le navigateur ait affiché la carte avant de charger
+function loadRoutes() {
+    fetch('/api/routes')
+        .then(res => res.json())
+        .then(data => {
+            allRoutesData = data;
+            drawFilteredRoutes();
+        }).catch(e => console.error("⚠️ Erreur tracés:", e));
+}
+
+if ('requestIdleCallback' in window) {
+    requestIdleCallback(loadRoutes, { timeout: 3000 });
+} else {
+    setTimeout(loadRoutes, 500); // Fallback pour Safari
+}
+
+// --- TRACÉS WFS ---
 function drawFilteredRoutes() {
     routesLayer.clearLayers();
-    
+
     const draw = (features, color, weight, opacity) => {
         features.forEach(feature => {
-            const props = feature.properties;
-            const lineName = props.ligne || props.code_ligne || props.nom; 
-            
-            // Masquer si on utilise des filtres et que la ligne n'est pas sélectionnée
+            const props    = feature.properties;
+            const lineName = props.ligne || props.code_ligne || props.nom;
+
             if (activeFilters.size > 0 && !activeFilters.has(lineName)) return;
 
             L.geoJSON(feature, {
@@ -57,41 +71,46 @@ function drawFilteredRoutes() {
         });
     };
 
-    // On garde exactement tes styles d'origine
-    draw(allRoutesData.bus, '#888888', 2, 0.3);
+    draw(allRoutesData.bus,  '#888888', 2, 0.3);
     draw(allRoutesData.tram, '#E2001A', 3, 0.5);
 }
 
+// --- UTILITAIRES ---
 function distanceMeters(lat1, lng1, lat2, lng2) {
-    const R = 6371000;
+    const R    = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2
-            + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
-            * Math.sin(dLng / 2) ** 2;
+    const a    = Math.sin(dLat / 2) ** 2
+               + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+               * Math.sin(dLng / 2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Build stop markers
-function buildStopsLayer() {
-    stopsLayer.clearLayers();
+// --- MARQUEURS D'ARRÊTS ---
 
+// [OPT #4] buildStopsLayer crée les marqueurs UNE SEULE FOIS puis délègue à filterStopsVisibility
+function buildStopsLayer() {
+    // Si les marqueurs existent déjà, on se contente de filtrer leur visibilité
+    if (allStopMarkers.length > 0) {
+        filterStopsVisibility();
+        toggleStopsVisibility();
+        return;
+    }
+
+    // Première construction : on crée tous les marqueurs et on les stocke
     allStopsGeo.forEach(stop => {
-        if (activeFilters.size > 0 && !stop.lines.some(l => activeFilters.has(l))) return;
+        const linesHtml = stop.lines.map(l => {
+            const active = activeFilters.size === 0 || activeFilters.has(l);
+            return `<span style="display:inline-block;background:${active ? '#E2001A' : '#999'};color:#fff;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.8em;font-weight:700;">${l}</span>`;
+        }).join('');
+
+        const popupId = `arrivals-${stop.id}`;
 
         const m = L.circleMarker([stop.lat, stop.lng], {
             radius: 6, fillColor: '#555', color: '#fff',
             weight: 2, fillOpacity: 0.6, opacity: 0.9,
         });
 
-        const linesHtml = stop.lines
-            .map(l => {
-                const active = activeFilters.size === 0 || activeFilters.has(l);
-                return `<span style="display:inline-block;background:${active ? '#E2001A' : '#999'};color:#fff;border-radius:4px;padding:1px 6px;margin:2px;font-size:0.8em;font-weight:700;">${l}</span>`;
-            }).join('');
-
-        const popupId = `arrivals-${stop.id}`;
-        
         m.bindPopup(`
             <div style="min-width:200px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -106,24 +125,24 @@ function buildStopsLayer() {
             </div>`, { maxWidth: 280 });
 
         m.on('popupopen', () => {
-            const el = document.getElementById(popupId);
+            const el  = document.getElementById(popupId);
             const btn = document.getElementById(`refresh-stop-${stop.id}`);
-            
+
             const fetchArrivals = async () => {
                 if (!el) return;
                 if (btn) btn.classList.add('spin-anim');
                 try {
-                    const res = await fetch(`/api/arrivals/${stop.id}`);
+                    const res  = await fetch(`/api/arrivals/${stop.id}`);
                     const data = await res.json();
                     const passages = data.passages || [];
                     if (passages.length === 0) {
                         el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
                     } else {
                         el.innerHTML = passages.slice(0, 6).map(p => {
-                            const isRT = p.type === 'R';
+                            const isRT       = p.type === 'R';
                             const delaiStyle = isRT ? 'color:#E2001A;font-weight:700;' : 'color:#777;';
-                            const rtBadge = isRT ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>' : '';
-                            const heure = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
+                            const rtBadge    = isRT ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>' : '';
+                            const heure      = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
                             return `
                                 <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f0f0f0;">
                                     <span style="background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;font-weight:700;font-size:0.85em;white-space:nowrap;">${p.ligne}</span>
@@ -140,7 +159,7 @@ function buildStopsLayer() {
             };
 
             fetchArrivals();
-            if (btn) btn.onclick = fetchArrivals; 
+            if (btn) btn.onclick = fetchArrivals;
 
             if (currentStopInterval) clearInterval(currentStopInterval);
             currentStopInterval = setInterval(fetchArrivals, 15000);
@@ -153,9 +172,21 @@ function buildStopsLayer() {
             }
         });
 
-        stopsLayer.addLayer(m);
+        allStopMarkers.push({ marker: m, stop });
     });
+
+    filterStopsVisibility();
     toggleStopsVisibility();
+}
+
+// [OPT #4] Applique le filtre actif sur les marqueurs existants (pas de recréation)
+function filterStopsVisibility() {
+    stopsLayer.clearLayers();
+    allStopMarkers.forEach(({ marker, stop }) => {
+        if (activeFilters.size === 0 || stop.lines.some(l => activeFilters.has(l))) {
+            stopsLayer.addLayer(marker);
+        }
+    });
 }
 
 function toggleStopsVisibility() {
@@ -174,9 +205,9 @@ let firstLocationFound = false;
 document.getElementById('locate-btn').onclick = () => {
     if (!isTrackingLocation) {
         isTrackingLocation = true;
-        document.getElementById('locate-btn').style.color = 'var(--tcl-red)'; 
+        document.getElementById('locate-btn').style.color = 'var(--tcl-red)';
         map.locate({ watch: true, setView: false, enableHighAccuracy: true });
-        
+
         if (userPosition) map.setView([userPosition.lat, userPosition.lng], 16);
     } else {
         if (userPosition) {
@@ -192,9 +223,9 @@ map.on('locationfound', (e) => {
             radius: 8, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
         }).addTo(map);
     } else {
-        userMarker.setLatLng(e.latlng); 
+        userMarker.setLatLng(e.latlng);
     }
-    
+
     if (!firstLocationFound && isTrackingLocation) {
         map.setView(e.latlng, 16);
         firstLocationFound = true;
@@ -203,31 +234,31 @@ map.on('locationfound', (e) => {
 
 // --- GESTION DES BUS ---
 function formatLine(val) {
-    if(!val) return "?";
+    if (!val) return "?";
     return val.split('::')[1]?.split(':')[0] || val;
 }
 
 function getStopName(siriRef, siriNameObj) {
     if (siriNameObj && siriNameObj[0] && siriNameObj[0].value) return siriNameObj[0].value;
     if (!siriRef) return "Inconnue";
-    const stopId = siriRef.split(':')[3]; 
+    const stopId = siriRef.split(':')[3];
     return dictStops[stopId] || `Arrêt n°${stopId}`;
 }
 
 async function updateBuses() {
     try {
-        const res = await fetch('/api/buses');
-        const data = await res.json();
+        const res      = await fetch('/api/buses');
+        const data     = await res.json();
         const vehicles = data?.Siri?.ServiceDelivery?.VehicleMonitoringDelivery?.[0]?.VehicleActivity || [];
-        
+
         busLayer.clearLayers();
         let visibleCount = 0;
-        const currentZoom = map.getZoom();
-        const tempPositions = {}; 
+        const currentZoom  = map.getZoom();
+        const tempPositions = {};
 
         vehicles.forEach(v => {
             const journey = v.MonitoredVehicleJourney;
-            const line = formatLine(journey.LineRef.value);
+            const line    = formatLine(journey.LineRef.value);
             knownLines.add(line);
 
             if (activeFilters.size > 0 && !activeFilters.has(line)) return;
@@ -239,12 +270,12 @@ async function updateBuses() {
             if (!tempPositions[line]) tempPositions[line] = [];
             tempPositions[line].push({ lat, lng });
 
-            const bearing = journey.Bearing; 
+            const bearing    = journey.Bearing;
             const hasBearing = bearing !== undefined && bearing !== null;
 
             const isZoomedOut = currentZoom < 14;
-            const size = isZoomedOut ? 16 : 32;
-            const text = isZoomedOut ? '' : line;
+            const size    = isZoomedOut ? 16 : 32;
+            const text    = isZoomedOut ? '' : line;
             const ARROW_H = isZoomedOut ? 0 : 12;
             const wrapperW = size;
             const wrapperH = size + ARROW_H;
@@ -265,11 +296,11 @@ async function updateBuses() {
                         <div class="bus-bubble" style="top:${ARROW_H}px;"><span style="font-size:${fontSize}; line-height:1;">${text}</span></div>
                     </div>`,
                 iconSize:   [wrapperW, wrapperH],
-                iconAnchor: [wrapperW / 2, wrapperH - size / 2], 
+                iconAnchor: [wrapperW / 2, wrapperH - size / 2],
             });
 
             const destinationPrecise = getStopName(journey.DestinationRef?.value, journey.DestinationName);
-            const prochainArret = getStopName(journey.MonitoredCall?.StopPointRef?.value, journey.MonitoredCall?.StopPointName);
+            const prochainArret      = getStopName(journey.MonitoredCall?.StopPointRef?.value, journey.MonitoredCall?.StopPointName);
 
             L.marker([lat, lng], { icon: busIcon }).addTo(busLayer)
              .bindPopup(`
@@ -293,28 +324,27 @@ const filterModal = document.getElementById('filter-modal');
 document.getElementById('filter-btn').onclick = () => {
     const list = document.getElementById('filter-list');
     list.innerHTML = "";
-    
+
     const btnAll = document.createElement('button');
     btnAll.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
-    btnAll.innerText = "Toutes";
-    btnAll.onclick = () => { 
-        activeFilters.clear(); 
-        syncUI(); 
+    btnAll.innerText  = "Toutes";
+    btnAll.onclick    = () => {
+        activeFilters.clear();
+        syncUI();
         updateBuses();
     };
     list.appendChild(btnAll);
 
     const allLines = Array.from(knownLines);
-
     let nearbyLines = [];
-    let otherLines = [];
+    let otherLines  = [];
 
     if (userPosition && allStopsGeo.length > 0) {
         const nearbyStops = allStopsGeo
             .map(s => ({ ...s, dist: distanceMeters(userPosition.lat, userPosition.lng, s.lat, s.lng) }))
             .filter(s => s.dist <= 500);
 
-        const nearbyLinesMap = new Map(); 
+        const nearbyLinesMap = new Map();
         nearbyStops.forEach(s => {
             s.lines.forEach(line => {
                 if (knownLines.has(line)) {
@@ -329,7 +359,6 @@ document.getElementById('filter-btn').onclick = () => {
             .sort((a, b) => a.minDist - b.minDist);
 
         const nearbyLineNames = new Set(nearbyLines.map(l => l.line));
-
         otherLines = allLines
             .filter(l => !nearbyLineNames.has(l))
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
@@ -342,8 +371,8 @@ document.getElementById('filter-btn').onclick = () => {
 
     function makeLineBtn(line, distLabel) {
         const btn = document.createElement('button');
-        btn.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
-        btn.innerHTML = distLabel ? `${line}<span class="line-dist">${distLabel}</span>` : line;
+        btn.className    = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
+        btn.innerHTML    = distLabel ? `${line}<span class="line-dist">${distLabel}</span>` : line;
         btn.dataset.line = line;
         btn.onclick = () => {
             if (activeFilters.has(line)) activeFilters.delete(line);
@@ -386,19 +415,21 @@ document.getElementById('filter-btn').onclick = () => {
     filterModal.classList.remove('hidden');
 };
 
+// [OPT #4] syncUI appelle filterStopsVisibility au lieu de buildStopsLayer
+// → pas de recréation des ~9800 marqueurs, juste un filtrage de visibilité
 function syncUI() {
     const mainBtn = document.getElementById('filter-btn');
     mainBtn.innerText = activeFilters.size === 0 ? '🚍 Filtrer' : `🚍 ${activeFilters.size} sélectionnés`;
-    
+
     document.querySelectorAll('.line-btn').forEach(b => {
         const line = b.dataset.line;
         if (!line) b.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
-        else b.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
+        else        b.className = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
     });
 
-    if (allStopsGeo.length > 0) buildStopsLayer();
-    
-    // NOUVEAUTÉ : Mise à jour des tracés avec le filtre
+    // Filtrer la visibilité des arrêts sans les recréer
+    if (allStopMarkers.length > 0) filterStopsVisibility();
+
     if (allRoutesData.bus.length > 0) drawFilteredRoutes();
 }
 
@@ -416,12 +447,12 @@ document.getElementById('alert-btn').onclick = async () => {
     const list = document.getElementById('alert-list');
     document.getElementById('alert-modal').classList.remove('hidden');
     list.innerHTML = "Chargement des alertes...";
-    
+
     try {
-        const res = await fetch('/api/alerts');
+        const res  = await fetch('/api/alerts');
         const data = await res.json();
         list.innerHTML = "";
-        
+
         let alertes = data.values || [];
         if (activeFilters.size > 0) {
             alertes = alertes.filter(a => activeFilters.has(a.ligne_cli));
@@ -435,10 +466,10 @@ document.getElementById('alert-btn').onclick = async () => {
         alertes.forEach(a => {
             const div = document.createElement('div');
             div.className = "alert-item";
-            const debut = formatAlertDate(a.debut);
-            const fin = formatAlertDate(a.fin);
+            const debut        = formatAlertDate(a.debut);
+            const fin          = formatAlertDate(a.fin);
             const ligneImpactee = a.ligne_cli || "Inconnue";
-            const cleanMessage = a.message ? a.message.replace(/<[^>]*>?/gm, '') : 'Détails indisponibles';
+            const cleanMessage  = a.message ? a.message.replace(/<[^>]*>?/gm, '') : 'Détails indisponibles';
 
             div.innerHTML = `
                 <strong>${a.titre || 'Alerte Trafic'}</strong><br>
@@ -451,7 +482,7 @@ document.getElementById('alert-btn').onclick = async () => {
 };
 
 document.getElementById('close-filters').onclick = () => filterModal.classList.add('hidden');
-document.getElementById('close-alerts').onclick = () => document.getElementById('alert-modal').classList.add('hidden');
+document.getElementById('close-alerts').onclick  = () => document.getElementById('alert-modal').classList.add('hidden');
 
 map.on('zoomend', updateBuses);
 setInterval(updateBuses, 15000);
