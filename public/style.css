@@ -41,6 +41,10 @@ body, html {
 }
 .ui-button:active { transform: scale(0.95); background: #eee; }
 
+.ui-button svg {
+    display: block;
+}
+
 /* --- MODALES (Mobile Bottom Sheet) --- */
 .modal {
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -186,15 +190,6 @@ body, html {
 }
 .close-modal:hover { color: #333; }
 
-.refresh-btn {
-    background: none; border: none; cursor: pointer;
-    font-size: 1.3em; padding: 0 4px; outline: none;
-    transition: transform 0.3s; color: #555;
-}
-.refresh-btn:hover { color: var(--tcl-red); }
-
-@keyframes spin { 100% { transform: rotate(360deg); } }
-.spin-anim { animation: spin 0.5s linear; }
 
 /* --- FAVORIS --- */
 

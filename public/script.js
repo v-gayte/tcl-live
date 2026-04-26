@@ -167,7 +167,6 @@ function buildStopsLayer() {
             <div style="min-width:200px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <b>${stop.nom}</b>
-                    <button id="refresh-stop-${stop.id}" class="refresh-btn">🔄</button>
                 </div>
                 <hr style="border:0;border-top:1px solid #eee;margin:8px 0;">
                 <div id="${popupId}">⏳ Chargement...</div>
@@ -175,11 +174,9 @@ function buildStopsLayer() {
 
         m.on('popupopen', () => {
             const el  = document.getElementById(popupId);
-            const btn = document.getElementById(`refresh-stop-${stop.id}`);
 
             const fetchArrivals = async () => {
                 if (!el) return;
-                if (btn) btn.classList.add('spin-anim');
                 try {
                     const res  = await fetch(`/api/arrivals/${stop.id}`);
                     const data = await res.json();
@@ -204,11 +201,9 @@ function buildStopsLayer() {
                 } catch (e) {
                     if (el) el.innerHTML = '<i style="color:#c00;">Erreur de chargement</i>';
                 }
-                if (btn) setTimeout(() => btn.classList.remove('spin-anim'), 500);
             };
 
             fetchArrivals();
-            if (btn) btn.onclick = fetchArrivals;
 
             if (currentStopInterval) clearInterval(currentStopInterval);
             currentStopInterval = setInterval(fetchArrivals, 15000);
@@ -272,7 +267,7 @@ map.on('locationfound', (e) => {
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
     if (!userMarker) {
         userMarker = L.circleMarker(e.latlng, {
-            radius: 8, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
+            radius: 10, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
         }).addTo(map);
     } else {
         userMarker.setLatLng(e.latlng);

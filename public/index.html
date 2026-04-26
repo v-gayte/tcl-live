@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>TCL Live</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link rel="stylesheet" href="style.css">
 </head>
@@ -18,7 +19,12 @@
             <button id="fav-btn" class="ui-button fav-btn-hidden" title="Appliquer mes favoris">⭐</button>
             <button id="filter-btn" class="ui-button">🚍 Filtrer</button>
             <button id="alert-btn" class="ui-button">⚠️ Alertes</button>
-            <button id="locate-btn" class="ui-button">📍</button>
+            <button id="locate-btn" class="ui-button" title="Me localiser">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                    <circle cx="12" cy="10" r="3"></circle>
+                </svg>
+            </button>
         </div>
     </div>
 
