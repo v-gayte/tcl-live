@@ -245,14 +245,20 @@ function toggleStopsVisibility() {
 map.on('zoomend', toggleStopsVisibility);
 
 // --- GÉOLOCALISATION ---
-let isTracking = false;
 let isTrackingLocation = false;
 let firstLocationFound = false;
 
 document.getElementById('locate-btn').onclick = () => {
+    if (!navigator.geolocation) {
+        alert("La géolocalisation n'est pas supportée par votre navigateur.");
+        return;
+    }
+
     if (!isTrackingLocation) {
         isTrackingLocation = true;
         document.getElementById('locate-btn').style.color = 'var(--tcl-red)';
+        
+        // [NOTE] Sur Chrome/Safari, la géolocalisation nécessite HTTPS (sauf localhost)
         map.locate({ watch: true, setView: false, enableHighAccuracy: true });
 
         if (userPosition) map.setView([userPosition.lat, userPosition.lng], 16);
@@ -277,6 +283,21 @@ map.on('locationfound', (e) => {
         map.setView(e.latlng, 16);
         firstLocationFound = true;
     }
+});
+
+map.on('locationerror', (e) => {
+    console.warn("Erreur de géolocalisation:", e.message);
+    let msg = "Impossible d'accéder à votre position.";
+    
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        msg += "\n\n⚠️ Erreur de sécurité : La géolocalisation nécessite une connexion sécurisée (HTTPS).";
+    } else {
+        msg += "\n\nVérifiez que vous avez autorisé l'accès à la position dans les réglages de votre navigateur.";
+    }
+    
+    alert(msg);
+    isTrackingLocation = false;
+    document.getElementById('locate-btn').style.color = '';
 });
 
 // --- GESTION DES BUS ---
