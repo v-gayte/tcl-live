@@ -1,3 +1,4 @@
+/* --- VARIABLES & BASE --- */
 :root {
     --tcl-red: #E2001A;
     --bg-white: rgba(255, 255, 255, 0.98);
@@ -10,10 +11,10 @@ body, html {
     overflow: hidden; background: #f0f0f0;
 }
 
+/* --- LAYOUT PRINCIPAL --- */
 #map { width: 100%; height: 100%; z-index: 1; }
 
-/* --- MOBILE FIRST (Par défaut) --- */
-
+/* --- BARRE D'ÉTAT & CONTRÔLES (Mobile First) --- */
 #status-bar {
     position: absolute; top: 10px; left: 10px; right: 10px;
     background: var(--bg-white);
@@ -29,7 +30,7 @@ body, html {
 
 #controls { display: flex; gap: 6px; }
 
-/* Hauteur fixe sur tous les boutons pour que la barre ne change JAMAIS de taille */
+/* --- BOUTONS UI --- */
 .ui-button {
     flex: 1; background: #f5f5f5; border: 1px solid #eee;
     padding: 0; height: 44px;
@@ -40,7 +41,7 @@ body, html {
 }
 .ui-button:active { transform: scale(0.95); background: #eee; }
 
-/* Modales Mobile (Bottom Sheet) */
+/* --- MODALES (Mobile Bottom Sheet) --- */
 .modal {
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.5); z-index: 2000;
@@ -56,12 +57,13 @@ body, html {
 
 @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
+/* --- GRILLE DE FILTRES --- */
 #filter-list { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 
 .filter-section-header {
     font-size: 0.95em; font-weight: 700; color: #333;
     padding: 6px 0 2px; border-bottom: 2px solid #eee;
-    grid-column: 1 / -1; /* full width in parent grid */
+    grid-column: 1 / -1;
 }
 .filter-section-header small { font-weight: 400; color: #999; }
 
@@ -83,7 +85,6 @@ body, html {
 }
 
 /* --- DESKTOP ADAPTIVE (Ecrans > 768px) --- */
-
 @media (min-width: 768px) {
     #status-bar {
         width: 380px; top: 20px; left: 20px; right: auto;
@@ -93,13 +94,13 @@ body, html {
 
     #controls { flex-direction: row; flex-wrap: nowrap; }
     .ui-button { flex: none; width: auto; padding: 0 16px; height: 40px; font-size: 0.9em; }
-    /* Ordre desktop : ⭐ | 📍 | Filtrer | Alertes */
-    /* Largeur fixe sur #fav-btn pour éviter le saut de taille quand le contenu change (⭐ vs ⭐ 3) */
+    
+    /* Ordre desktop : Favoris | Localiser | Filtrer | Alertes */
     #fav-btn { 
         order: 1; 
-        flex: 0 0 65px; /* Force Flexbox à garder exactement 65px : ne grandit pas (0), ne rétrécit pas (0) */
+        flex: 0 0 65px;
         width: 65px; 
-        min-width: 65px; /* Sécurité si le contenu change ou disparaît */
+        min-width: 65px;
         max-width: 65px;
         padding: 0; 
         box-sizing: border-box;
@@ -124,9 +125,7 @@ body, html {
     .line-btn.active:hover { background: #b00014; }
 }
 
-/* === Icônes Bus avec flèche de direction === */
-
-/* Le wrapper Leaflet ne doit pas clipper la flèche qui dépasse du cercle */
+/* --- ICÔNES DE BUS (Leaflet Custom) --- */
 .custom-bus-icon {
     background: transparent !important;
     border: none !important;
@@ -134,7 +133,6 @@ body, html {
     overflow: visible !important;
 }
 
-/* La bulle rouge (le cercle avec le numéro de ligne) */
 .bus-bubble {
     position: absolute;
     inset: 0;
@@ -154,21 +152,18 @@ body, html {
     transform: scale(1.15);
 }
 
-/* La flèche SVG positionnée au-dessus de la bulle */
 .bus-arrow {
     position: absolute;
-    /* Centré horizontalement, dépasse du bord supérieur du wrapper */
     left: 50%;
     top: 0;
-    transform-origin: center bottom; /* On tourne autour du bas (= centre du cercle) */
+    transform-origin: center bottom;
     transform: translateX(-50%);
     z-index: 2;
     pointer-events: none;
     transition: transform 0.4s ease-out;
-    /* La flèche pointe vers le haut par défaut (bearing 0 = Nord) */
 }
 
-/* === Alertes & divers === */
+/* --- ALERTES & DIVERS --- */
 .alert-item { 
     background: #fff5f5; border-left: 4px solid var(--tcl-red); 
     padding: 15px; margin-bottom: 12px; border-radius: 8px;
@@ -191,73 +186,55 @@ body, html {
 }
 .close-modal:hover { color: #333; }
 
-/* === NOUVEAU: Bouton de rafraichissement des arrêts === */
 .refresh-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: 1.3em;
-    padding: 0 4px;
-    outline: none;
-    transition: transform 0.3s;
-    color: #555;
+    background: none; border: none; cursor: pointer;
+    font-size: 1.3em; padding: 0 4px; outline: none;
+    transition: transform 0.3s; color: #555;
 }
+.refresh-btn:hover { color: var(--tcl-red); }
 
-.refresh-btn:hover {
-    color: var(--tcl-red);
-}
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.spin-anim { animation: spin 0.5s linear; }
 
-@keyframes spin {
-    100% { transform: rotate(360deg); }
-}
+/* --- FAVORIS --- */
 
-.spin-anim {
-    animation: spin 0.5s linear;
-}
-
-/* === FAVORIS === */
-
-/* Étoile affichée en haut à gauche de chaque bouton de ligne — taille augmentée */
+/* Étoile sur les boutons de ligne */
 .fav-star {
     position: absolute;
     top: 3px; left: 4px;
-    font-size: 1.2em;        /* Légèrement augmenté pour meilleure lisibilité */
+    font-size: 1.2em;
     color: #ccc;
     cursor: pointer;
     line-height: 1;
     user-select: none;
     transition: color 0.2s, transform 0.2s;
-    /* Zone de clic élargie pour faciliter le tap mobile */
-    padding: 4px;
-    margin: -4px;
-    z-index: 2;
+    padding: 4px; margin: -4px; z-index: 2;
 }
 .fav-star:hover { color: #ffd700; transform: scale(1.3); }
 .fav-star.starred { color: #ffd700; }
 
-/* Sur un bouton actif (rouge), l'étoile devient blanche/or */
+/* Étoile sur bouton actif */
 .line-btn.active .fav-star         { color: rgba(255,255,255,0.5); }
 .line-btn.active .fav-star.starred  { color: #ffe066; }
 
-/* Header section favoris (doré) */
+/* En-tête de section favoris */
 .filter-section-header.fav-header {
     color: #9a6f00;
     border-bottom-color: #ffd700;
 }
 
-/* Bouton ⭐ dans la barre de contrôle */
+/* Bouton favoris de la barre d'état */
 #fav-btn {
     background: linear-gradient(135deg, #fffbe6, #fff0b3);
     border-color: #ffd700;
     color: #9a6f00;
     font-weight: 700;
-    flex: 1;                   /* Même flex que les autres sur mobile */
+    flex: 1;
     transition: background 0.2s, color 0.2s, opacity 0.25s, visibility 0.25s;
 }
 #fav-btn:active { background: #ffd700; color: #5a3e00; }
 
-/* Bouton ⭐ invisible mais présent dans le layout quand pas de favoris
-   → la barre ne change PAS de taille quand les favoris apparaissent/disparaissent */
+/* Gestion de l'invisibilité (maintien du layout) */
 .fav-btn-hidden {
     visibility: hidden !important;
     opacity: 0 !important;
@@ -265,28 +242,23 @@ body, html {
     transition: opacity 0.25s, visibility 0.25s !important;
 }
 
-/* Badge count sur le bouton ⭐ */
+/* Badge de décompte */
 .fav-count {
     display: inline-block;
-    background: #9a6f00;
-    color: #fff;
-    border-radius: 8px;
-    font-size: 0.75em;
-    padding: 0 5px;
-    margin-left: 2px;
-    font-weight: 700;
-    vertical-align: middle;
+    background: #9a6f00; color: #fff;
+    border-radius: 8px; font-size: 0.75em;
+    padding: 0 5px; margin-left: 2px;
+    font-weight: 700; vertical-align: middle;
 }
 
-/* === NOUVEAU : État "Actif" (enclenché) pour le bouton Favoris === */
+/* État actif du bouton favoris */
 #fav-btn.active-fav {
-    background: #ffd700; /* Fond jaune doré solide */
-    color: #5a3e00;      /* Texte plus foncé */
+    background: #ffd700;
+    color: #5a3e00;
     border-color: #d4af37;
-    box-shadow: inset 0 3px 6px rgba(0,0,0,0.15); /* Effet bouton enfoncé */
+    box-shadow: inset 0 3px 6px rgba(0,0,0,0.15);
 }
 
-/* On adapte la couleur du petit badge quand le bouton est actif */
 #fav-btn.active-fav .fav-count {
     background: #5a3e00;
     color: #ffd700;

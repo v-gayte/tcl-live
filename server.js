@@ -7,12 +7,15 @@ const compression = require('compression');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// [OPT #6] Gzip compression — réduit la taille des réponses JSON de ~60-70%
+// --- CONFIGURATION ---
+
+// [OPT] Gzip compression — réduit la taille des réponses JSON de ~60-70%
 app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// URLs des API Grand Lyon & SYTRAL
 const BUSES_URL   = "https://data.grandlyon.com/siri-lite/2.0/vehicle-monitoring.json";
 const ALERTS_URL  = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclalertetrafic_2/all.json?maxfeatures=-1&start=1";
 const STOPS_URL   = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclarret/all.json?maxfeatures=-1";
@@ -21,12 +24,14 @@ const BUS_ROUTES_URL  = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=
 const TRAM_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignetram_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
 const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
 
+// Authentification API
 const USERNAME    = process.env.API_USER?.trim();
 const PASSWORD    = process.env.API_PASSWORD?.trim();
 const credentials = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
 const AUTH_HEADER = { 'Authorization': `Basic ${credentials}`, 'Accept': 'application/json' };
 
 // --- CACHES ---
+
 let busCache        = null;
 let busLastFetch    = 0;
 const BUS_TTL       = 15000; // 15s
@@ -34,19 +39,22 @@ const BUS_TTL       = 15000; // 15s
 let stopsCache      = null;
 let routesCache     = null;
 
-// [OPT #2] Cache pour les alertes (changent rarement)
+// [OPT] Cache pour les alertes (changent rarement)
 let alertsCache     = null;
 let alertsLastFetch = 0;
 const ALERTS_TTL    = 2 * 60 * 1000; // 2 min
 
-// [OPT #1] Cache GLOBAL pour tous les passages — rafraîchissement PROACTIF
+// [OPT] Cache GLOBAL pour tous les passages — rafraîchissement PROACTIF
 let allArrivalsCache   = null;
 let allArrivalsFetchTs = 0;
 const ALL_ARRIVALS_TTL = 15000; // 15s
 
 // --- ROUTES API ---
 
-// Tracés WFS (bus + tram) — mis en cache indéfiniment (données stables)
+/**
+ * Récupère les tracés WFS (bus + tram).
+ * Mis en cache indéfiniment car les données sont stables.
+ */
 app.get('/api/routes', async (req, res) => {
     if (routesCache) return res.json(routesCache);
     try {
@@ -69,7 +77,10 @@ app.get('/api/routes', async (req, res) => {
     }
 });
 
-// Positions des bus — rafraîchies toutes les 15s
+/**
+ * Récupère les positions des bus en temps réel.
+ * Rafraîchi toutes les 15 secondes via cache.
+ */
 app.get('/api/buses', async (req, res) => {
     const now = Date.now();
     if (busCache && (now - busLastFetch < BUS_TTL)) return res.json(busCache);
@@ -81,7 +92,10 @@ app.get('/api/buses', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// [OPT #2] Alertes trafic — cache 2 minutes
+/**
+ * Récupère les alertes trafic.
+ * Cache de 2 minutes.
+ */
 app.get('/api/alerts', async (req, res) => {
     const now = Date.now();
     if (alertsCache && (now - alertsLastFetch < ALERTS_TTL)) return res.json(alertsCache);
@@ -93,7 +107,10 @@ app.get('/api/alerts', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "Erreur alertes" }); }
 });
 
-// Arrêts (dictionnaire nom + géolocalisation) — mis en cache indéfiniment au démarrage
+/**
+ * Récupère la liste des arrêts (nom + géolocalisation).
+ * Mis en cache indéfiniment au démarrage.
+ */
 app.get('/api/stops', async (req, res) => {
     if (stopsCache) return res.json(stopsCache);
     try {
@@ -129,7 +146,9 @@ app.get('/api/stops', async (req, res) => {
     }
 });
 
-// [OPT #1] Cache global des passages — rafraîchissement PROACTIF en arrière-plan
+/**
+ * Met à jour le cache global des passages.
+ */
 async function refreshAllArrivals() {
     try {
         const response = await fetch(ARRIVALS_URL, { headers: AUTH_HEADER });
@@ -140,6 +159,9 @@ async function refreshAllArrivals() {
     }
 }
 
+/**
+ * Récupère les passages pour un arrêt spécifique à partir du cache global.
+ */
 app.get('/api/arrivals/:stopId', async (req, res) => {
     const stopId = parseInt(req.params.stopId, 10);
     if (!stopId) return res.status(400).json({ error: 'stopId invalide' });
@@ -164,8 +186,10 @@ app.get('/api/arrivals/:stopId', async (req, res) => {
     }
 });
 
+// --- DÉMARRAGE SERVEUR ---
+
 app.listen(PORT, async () => {
-    console.log(`🚀 Serveur PRO : http://localhost:${PORT}`);
+    console.log(`🚀 Serveur TCL Live démarré : http://localhost:${PORT}`);
 
     // 1. Pré-chargement des arrêts (dictionnaire + géo)
     try {

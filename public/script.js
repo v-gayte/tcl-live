@@ -1,3 +1,8 @@
+/**
+ * TCL Live - Application de suivi en temps réel du réseau TCL
+ */
+
+// --- INITIALISATION CARTE ---
 const map = L.map('map', { zoomControl: false }).setView([45.76, 4.83], 13);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap' }).addTo(map);
 L.control.zoom({ position: 'bottomright' }).addTo(map);
@@ -5,33 +10,47 @@ L.control.zoom({ position: 'bottomright' }).addTo(map);
 const busLayer    = L.layerGroup().addTo(map);
 const routesLayer = L.layerGroup().addTo(map);
 
+// --- VARIABLES GLOBALES ---
 let userMarker   = null;
 let userPosition = null;
 let activeFilters   = new Set();
 let knownLines      = new Set();
 let busPositionsByLine = {};
 
-// --- DONNÉES STATIQUES ---
+// Données statiques
 let dictStops   = {};
 let allStopsGeo = [];
 const stopsLayer = L.layerGroup();
 let currentStopInterval = null;
 let allRoutesData = { bus: [], tram: [] };
 
-// [OPT #4] Tableau des marqueurs d'arrêts créés une seule fois
+// [OPT] Tableau des marqueurs d'arrêts créés une seule fois pour éviter le lag
 let allStopMarkers = [];
 
-// --- FAVORIS (persistés en localStorage) ---
+// Favoris (persistés en localStorage)
 let favorites = new Set(JSON.parse(localStorage.getItem('tcl_favorites') || '[]'));
 
+// --- GESTION DES FAVORIS ---
+
+/**
+ * Sauvegarde les favoris dans le localStorage.
+ */
 function saveFavorites() {
     localStorage.setItem('tcl_favorites', JSON.stringify([...favorites]));
 }
+
+/**
+ * Alterne l'état favori d'une ligne.
+ */
 function toggleFavorite(line) {
     if (favorites.has(line)) favorites.delete(line);
     else favorites.add(line);
     saveFavorites();
 }
+
+/**
+ * Met à jour l'affichage du bouton favoris dans la barre d'état.
+ */
 function updateFavBtn() {
     const btn = document.getElementById('fav-btn');
     if (!btn) return;
@@ -47,7 +66,7 @@ function updateFavBtn() {
 
 // --- CHARGEMENT DES DONNÉES ---
 
-// Arrêts : chargés immédiatement (donnée critique pour l'affichage et les popups)
+// Chargement initial des arrêts (donnée critique)
 fetch('/api/stops')
     .then(res => res.json())
     .then(data => {
@@ -56,8 +75,10 @@ fetch('/api/stops')
         buildStopsLayer();
     }).catch(e => console.error("⚠️ Erreur chargement arrêts:", e));
 
-// [OPT #3] Tracés WFS : chargement différé (lazy) pour ne pas bloquer le rendu initial
-// requestIdleCallback attend que le navigateur ait affiché la carte avant de charger
+/**
+ * Charge les tracés WFS en différé.
+ * [OPT] Utilise requestIdleCallback pour ne pas bloquer le rendu initial.
+ */
 function loadRoutes() {
     fetch('/api/routes')
         .then(res => res.json())
@@ -70,10 +91,14 @@ function loadRoutes() {
 if ('requestIdleCallback' in window) {
     requestIdleCallback(loadRoutes, { timeout: 3000 });
 } else {
-    setTimeout(loadRoutes, 500); // Fallback pour Safari
+    setTimeout(loadRoutes, 500); // Fallback pour navigateurs non compatibles
 }
 
-// --- TRACÉS WFS ---
+// --- TRACÉS WFS (GÉOMÉTRIE) ---
+
+/**
+ * Dessine les tracés des lignes sur la carte en fonction des filtres actifs.
+ */
 function drawFilteredRoutes() {
     routesLayer.clearLayers();
 
@@ -96,6 +121,10 @@ function drawFilteredRoutes() {
 }
 
 // --- UTILITAIRES ---
+
+/**
+ * Calcule la distance en mètres entre deux points géographiques.
+ */
 function distanceMeters(lat1, lng1, lat2, lng2) {
     const R    = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -106,9 +135,12 @@ function distanceMeters(lat1, lng1, lat2, lng2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// --- MARQUEURS D'ARRÊTS ---
+// --- GESTION DES ARRÊTS ---
 
-// [OPT #4] buildStopsLayer crée les marqueurs UNE SEULE FOIS puis délègue à filterStopsVisibility
+/**
+ * Construit la couche des marqueurs d'arrêts.
+ * [OPT] Les marqueurs sont créés une seule fois.
+ */
 function buildStopsLayer() {
     // Si les marqueurs existent déjà, on se contente de filtrer leur visibilité
     if (allStopMarkers.length > 0) {
@@ -127,7 +159,7 @@ function buildStopsLayer() {
         const popupId = `arrivals-${stop.id}`;
 
         const m = L.circleMarker([stop.lat, stop.lng], {
-            radius: 6, fillColor: '#555', color: '#fff',
+            radius: 7, fillColor: '#555', color: '#fff',
             weight: 2, fillOpacity: 0.6, opacity: 0.9,
         });
 
@@ -196,7 +228,9 @@ function buildStopsLayer() {
     toggleStopsVisibility();
 }
 
-// [OPT #4] Applique le filtre actif sur les marqueurs existants (pas de recréation)
+/**
+ * Filtre la visibilité des arrêts en fonction des lignes actives.
+ */
 function filterStopsVisibility() {
     stopsLayer.clearLayers();
     allStopMarkers.forEach(({ marker, stop }) => {
@@ -206,16 +240,20 @@ function filterStopsVisibility() {
     });
 }
 
+/**
+ * Affiche ou cache la couche des arrêts selon le niveau de zoom.
+ */
 function toggleStopsVisibility() {
-    if (map.getZoom() >= 14) { if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer); }
+    if (map.getZoom() >= 16) { if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer); }
     else { if (map.hasLayer(stopsLayer)) map.removeLayer(stopsLayer); }
 }
 map.on('zoomend', toggleStopsVisibility);
 
-// Géolocalisation
+// --- GÉOLOCALISATION ---
 let isTracking = false;
 let isTrackingLocation = false;
 let firstLocationFound = false;
+
 document.getElementById('locate-btn').onclick = () => {
     if (!isTrackingLocation) {
         isTrackingLocation = true;
@@ -229,6 +267,7 @@ document.getElementById('locate-btn').onclick = () => {
         }
     }
 };
+
 map.on('locationfound', (e) => {
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
     if (!userMarker) {
@@ -246,11 +285,18 @@ map.on('locationfound', (e) => {
 });
 
 // --- GESTION DES BUS ---
+
+/**
+ * Formate le nom de la ligne à partir de la référence SIRI.
+ */
 function formatLine(val) {
     if (!val) return "?";
     return val.split('::')[1]?.split(':')[0] || val;
 }
 
+/**
+ * Récupère le nom d'un arrêt à partir de son ID ou de l'objet SIRI.
+ */
 function getStopName(siriRef, siriNameObj) {
     if (siriNameObj && siriNameObj[0] && siriNameObj[0].value) return siriNameObj[0].value;
     if (!siriRef) return "Inconnue";
@@ -258,6 +304,9 @@ function getStopName(siriRef, siriNameObj) {
     return dictStops[stopId] || `Arrêt n°${stopId}`;
 }
 
+/**
+ * Met à jour les positions des bus sur la carte.
+ */
 async function updateBuses() {
     try {
         const res      = await fetch('/api/buses');
@@ -322,26 +371,29 @@ async function updateBuses() {
     } catch (e) { console.error(e); }
 }
 
-// --- FILTRES MULTIPLES ---
+// --- MODAL FILTRES ---
+
 const filterModal = document.getElementById('filter-modal');
 
-// Crée un bouton de ligne avec étoile favori intégrée
+/**
+ * Crée un bouton de ligne avec étoile favori intégrée.
+ */
 function makeLineBtn(line, distLabel) {
     const btn = document.createElement('button');
     btn.className    = `line-btn ${activeFilters.has(line) ? 'active' : ''}`;
     btn.dataset.line = line;
 
-    // Étoile favori (coin supérieur gauche) — stopPropagation pour ne pas déclencher le filtre
+    // Étoile favori
     const star = document.createElement('span');
     star.className = `fav-star${favorites.has(line) ? ' starred' : ''}`;
     star.textContent = favorites.has(line) ? '★' : '☆';
     star.addEventListener('click', (e) => {
-        e.stopPropagation();
+        e.stopPropagation(); // Évite de déclencher le filtre lors du clic sur l'étoile
         toggleFavorite(line);
         star.className   = `fav-star${favorites.has(line) ? ' starred' : ''}`;
         star.textContent = favorites.has(line) ? '★' : '☆';
         updateFavBtn();
-        buildFilterList(); // Reconstruit le modal pour mettre à jour la section favoris
+        buildFilterList(); // Reconstruit pour mettre à jour la section favoris
     });
     btn.appendChild(star);
 
@@ -364,12 +416,14 @@ function makeLineBtn(line, distLabel) {
     return btn;
 }
 
-// Construit (ou reconstruit) le contenu du modal filtre
+/**
+ * Construit le contenu du modal filtre (Favoris, Proches, Autres).
+ */
 function buildFilterList() {
     const list = document.getElementById('filter-list');
     list.innerHTML = '';
 
-    // Bouton "Toutes"
+    // Bouton "Toutes" les lignes
     const btnAll = document.createElement('button');
     btnAll.className = `line-btn ${activeFilters.size === 0 ? 'active' : ''}`;
     btnAll.innerText = 'Toutes';
@@ -379,6 +433,7 @@ function buildFilterList() {
     const allLines = Array.from(knownLines);
     let nearbyLines = [], otherLines = [];
 
+    // Calcul des lignes à proximité (500m)
     if (userPosition && allStopsGeo.length > 0) {
         const nearbyStops = allStopsGeo
             .map(s => ({ ...s, dist: distanceMeters(userPosition.lat, userPosition.lng, s.lat, s.lng) }))
@@ -403,7 +458,7 @@ function buildFilterList() {
             .map(line => ({ line, minDist: Infinity }));
     }
 
-    // ⭐ Section FAVORIS — affichée en premier si des favoris existent
+    // Section FAVORIS
     const favLines = [...favorites]
         .filter(l => knownLines.has(l))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -418,7 +473,7 @@ function buildFilterList() {
         list.appendChild(favGrid);
     }
 
-    // 📍 Lignes proches
+    // Section LIGNES PROCHES
     if (nearbyLines.length > 0) {
         const header = document.createElement('div');
         header.className = 'filter-section-header';
@@ -433,7 +488,7 @@ function buildFilterList() {
         list.appendChild(nearbyGrid);
     }
 
-    // 🚍 Autres lignes
+    // Section AUTRES LIGNES
     if (otherLines.length > 0) {
         const header = document.createElement('div');
         header.className = 'filter-section-header';
@@ -451,18 +506,18 @@ document.getElementById('filter-btn').onclick = () => {
     filterModal.classList.remove('hidden');
 };
 
-// Clic sur ⭐ dans la barre : Mode Toggle (Bascule)
+// Clic sur bouton Favoris (Barre d'état)
 document.getElementById('fav-btn').onclick = () => {
     const favBtn = document.getElementById('fav-btn');
     const activeFavs = [...favorites].filter(l => knownLines.has(l));
     
-    if (activeFavs.length === 0) return; // Sécurité
+    if (activeFavs.length === 0) return;
 
-    // Si le bouton est DÉJÀ actif, on désactive tout (on remet "Toutes")
+    // Si déjà actif, on désactive
     if (favBtn.classList.contains('active-fav')) {
         activeFilters.clear();
     } else {
-        // Sinon, on applique les favoris
+        // Sinon, on applique les favoris comme filtres
         activeFilters = new Set(activeFavs);
     }
     
@@ -470,15 +525,15 @@ document.getElementById('fav-btn').onclick = () => {
     updateBuses();
 };
 
-updateFavBtn(); // Initialise l'état du bouton au chargement
-
-// [OPT #4] syncUI : filtrage visibilité sans recréation des marqueurs
-// [OPT #4] syncUI : filtrage visibilité sans recréation des marqueurs
+/**
+ * Synchronise l'interface utilisateur avec l'état des filtres.
+ * [OPT] Filtrage de visibilité sans recréation des marqueurs.
+ */
 function syncUI() {
     const mainBtn = document.getElementById('filter-btn');
     mainBtn.innerHTML = activeFilters.size === 0
-        ? '\ud83d\ude8d Filtrer'
-        : `\ud83d\ude8d <span class="fav-count" style="background:var(--tcl-red);">${activeFilters.size}</span>`;
+        ? '🚍 Filtrer'
+        : `🚍 <span class="fav-count" style="background:var(--tcl-red);">${activeFilters.size}</span>`;
 
     document.querySelectorAll('.line-btn').forEach(b => {
         const line = b.dataset.line;
@@ -490,14 +545,13 @@ function syncUI() {
     if (allRoutesData.bus.length > 0) drawFilteredRoutes();
     updateFavBtn();
 
-    // --- NOUVEAU : Met à jour l'état visuel du bouton Favoris (Allumé/Éteint) ---
+    // Met à jour l'état visuel du bouton Favoris
     const favBtn = document.getElementById('fav-btn');
     if (favBtn) {
         const activeFavs = [...favorites].filter(l => knownLines.has(l));
-        // On vérifie si les filtres actifs sont EXACTEMENT les mêmes que nos favoris dispo
         const isExactlyFavs = activeFilters.size > 0 && 
-                              activeFilters.size === activeFavs.length && 
-                              activeFavs.every(f => activeFilters.has(f));
+                               activeFilters.size === activeFavs.length && 
+                               activeFavs.every(f => activeFilters.has(f));
         
         if (isExactlyFavs) {
             favBtn.classList.add('active-fav');
@@ -507,7 +561,11 @@ function syncUI() {
     }
 }
 
-// --- ALERTES ---
+// --- GESTION DES ALERTES ---
+
+/**
+ * Formate la date d'une alerte.
+ */
 function formatAlertDate(dateString) {
     if (!dateString) return "?";
     const parts = dateString.split(' ');
@@ -555,9 +613,12 @@ document.getElementById('alert-btn').onclick = async () => {
     } catch (e) { list.innerHTML = "Erreur de connexion."; }
 };
 
+// --- INITIALISATION & BOUCLES ---
+
 document.getElementById('close-filters').onclick = () => filterModal.classList.add('hidden');
 document.getElementById('close-alerts').onclick  = () => document.getElementById('alert-modal').classList.add('hidden');
 
 map.on('zoomend', updateBuses);
-setInterval(updateBuses, 15000);
+setInterval(updateBuses, 15000); // Rafraîchissement automatique des bus
 updateBuses();
+updateFavBtn();
