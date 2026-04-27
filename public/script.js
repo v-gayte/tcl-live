@@ -635,6 +635,6 @@ document.getElementById('close-filters').onclick = () => filterModal.classList.a
 document.getElementById('close-alerts').onclick  = () => document.getElementById('alert-modal').classList.add('hidden');
 
 map.on('zoomend', updateBuses);
-setInterval(updateBuses, 15000); // Rafraîchissement automatique des bus
+setInterval(updateBuses, 5000); // Rafraîchissement automatique des bus (5s)
 updateBuses();
 updateFavBtn();
