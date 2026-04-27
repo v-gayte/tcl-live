@@ -22,6 +22,7 @@ const STOPS_URL   = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytra
 const ZONES_URL   = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclzonearret/all.json?maxfeatures=-1";
 const BUS_ROUTES_URL  = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignebus_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
 const TRAM_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignetram_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
+const METRO_ROUTES_URL = "https://download.data.grandlyon.com/wfs/sytral?SERVICE=WFS&VERSION=2.0.0&request=GetFeature&typename=sytral:tcl_sytral.tcllignemf_2_0_0&outputFormat=application/json&SRSNAME=EPSG:4326";
 const ARRIVALS_URL = "https://data.grandlyon.com/fr/datapusher/ws/rdata/tcl_sytral.tclpassagearret/all.json?maxfeatures=-1&start=1";
 
 // Authentification API
@@ -59,17 +60,25 @@ app.get('/api/routes', async (req, res) => {
     if (routesCache) return res.json(routesCache);
     try {
         console.log("⏳ Chargement des tracés via WFS...");
-        const [resBus, resTram] = await Promise.all([
+        const [resBus, resTram, resMetro] = await Promise.all([
             fetch(BUS_ROUTES_URL),
-            fetch(TRAM_ROUTES_URL)
+            fetch(TRAM_ROUTES_URL),
+            fetch(METRO_ROUTES_URL)
         ]);
-        const busData  = await resBus.json();
-        const tramData = await resTram.json();
+        const busData   = await resBus.json();
+        const tramData  = await resTram.json();
+        const metroData = await resMetro.json();
+        const filterFeatures = (features) => features.filter(f => {
+            const name = f.properties.ligne || f.properties.code_ligne || f.properties.nom;
+            return name && !name.startsWith('JD');
+        });
+
         routesCache = {
-            bus:  busData.features  || [],
-            tram: tramData.features || []
+            bus:   filterFeatures(busData.features   || []),
+            tram:  filterFeatures(tramData.features  || []),
+            metro: filterFeatures(metroData.features || [])
         };
-        console.log(`✅ Tracés chargés : ${routesCache.bus.length} bus, ${routesCache.tram.length} trams.`);
+        console.log(`✅ Tracés chargés : ${routesCache.bus.length} bus, ${routesCache.tram.length} trams, ${routesCache.metro.length} métros.`);
         res.json(routesCache);
     } catch (e) {
         console.error("⚠️ Erreur tracés WFS:", e);
@@ -86,7 +95,21 @@ app.get('/api/buses', async (req, res) => {
     if (busCache && (now - busLastFetch < BUS_TTL)) return res.json(busCache);
     try {
         const response = await fetch(BUSES_URL, { headers: AUTH_HEADER });
-        busCache = await response.json();
+        const rawData = await response.json();
+        
+        // Filtrage des JD et lignes sans nom
+        if (rawData?.Siri?.ServiceDelivery?.VehicleMonitoringDelivery?.[0]?.VehicleActivity) {
+            const activities = rawData.Siri.ServiceDelivery.VehicleMonitoringDelivery[0].VehicleActivity;
+            rawData.Siri.ServiceDelivery.VehicleMonitoringDelivery[0].VehicleActivity = activities.filter(v => {
+                const lineRef = v.MonitoredVehicleJourney?.LineRef?.value;
+                if (!lineRef) return false;
+                const parts = lineRef.split(':');
+                const lineName = parts.slice(1).find(p => p && p !== 'Line') || parts[0];
+                return lineName && !lineName.startsWith('JD');
+            });
+        }
+
+        busCache = rawData;
         busLastFetch = now;
         res.json(busCache);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -124,7 +147,9 @@ app.get('/api/stops', async (req, res) => {
                 dict[a.id] = a.nom;
                 if (a.lat && a.lon && a.desserte) {
                     const lines = [...new Set(
-                        a.desserte.split(',').map(d => d.split(':')[0].trim()).filter(Boolean)
+                        a.desserte.split(',')
+                            .map(d => d.split(':')[0].trim())
+                            .filter(l => l && !l.startsWith('JD'))
                     )];
                     if (lines.length > 0) {
                         geo.push({ id: a.id, nom: a.nom, lat: a.lat, lng: a.lon, lines });

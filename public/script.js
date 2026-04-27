@@ -22,13 +22,13 @@ let dictStops   = {};
 let allStopsGeo = [];
 const stopsLayer = L.layerGroup();
 let currentStopInterval = null;
-let allRoutesData = { bus: [], tram: [] };
+let allRoutesData = { bus: [], tram: [], metro: [] };
 
 // [OPT] Tableau des marqueurs d'arrêts créés une seule fois pour éviter le lag
 let allStopMarkers = [];
 
 // Favoris (persistés en localStorage)
-let favorites = new Set(JSON.parse(localStorage.getItem('tcl_favorites') || '[]'));
+let favorites = new Set(JSON.parse(localStorage.getItem('tcl_favorites') || '[]').filter(l => l && !l.startsWith('JD')));
 
 // --- GESTION DES FAVORIS ---
 
@@ -84,6 +84,14 @@ function loadRoutes() {
         .then(res => res.json())
         .then(data => {
             allRoutesData = data;
+            Object.values(allRoutesData).forEach(features => {
+                features.forEach(f => {
+                    const name = f.properties.ligne || f.properties.code_ligne || f.properties.nom;
+                    if (name && name !== '?' && !name.startsWith('JD')) {
+                        knownLines.add(name);
+                    }
+                });
+            });
             drawFilteredRoutes();
         }).catch(e => console.error("⚠️ Erreur tracés:", e));
 }
@@ -116,8 +124,19 @@ function drawFilteredRoutes() {
         });
     };
 
-    draw(allRoutesData.bus,  '#888888', 2, 0.3);
-    draw(allRoutesData.tram, '#E2001A', 3, 0.5);
+    draw(allRoutesData.bus,   '#888888', 2, 0.3);
+    draw(allRoutesData.tram,  '#E2001A', 3, 0.5);
+
+    // Tracés Métro avec couleurs spécifiques
+    const metroColors = { 'A': '#f12c32', 'B': '#0168b3', 'C': '#f7941d', 'D': '#00a84f', 'F1': '#84552e', 'F2': '#84552e' };
+    allRoutesData.metro.forEach(feature => {
+        const line = feature.properties.ligne || feature.properties.code_ligne || feature.properties.nom;
+        if (activeFilters.size > 0 && !activeFilters.has(line)) return;
+        L.geoJSON(feature, {
+            style: { color: metroColors[line] || '#333', weight: 5, opacity: 0.8 },
+            interactive: false
+        }).addTo(routesLayer);
+    });
 }
 
 // --- UTILITAIRES ---
@@ -158,7 +177,21 @@ function buildStopsLayer() {
 
         const popupId = `arrivals-${stop.id}`;
 
-        const m = L.circleMarker([stop.lat, stop.lng], {
+        const metroLinesAtStop = stop.lines.filter(l => ['A', 'B', 'C', 'D', 'F1', 'F2'].includes(l));
+        const mMetro = metroLinesAtStop.length > 0;
+        
+        const metroColors = { 'A': '#f12c32', 'B': '#0168b3', 'C': '#f7941d', 'D': '#00a84f', 'F1': '#84552e', 'F2': '#84552e' };
+        const bgColor = mMetro ? (metroColors[metroLinesAtStop[0]] || '#333') : '#555';
+
+        const m = mMetro ? L.marker([stop.lat, stop.lng], {
+            icon: L.divIcon({
+                className: 'metro-stop-icon',
+                html: `<div class="metro-stop-inner" style="background:${bgColor}; font-size:${metroLinesAtStop.join('').length > 2 ? '10px' : '13px'};">${metroLinesAtStop.join('/')}</div>`,
+                iconSize: [34, 26],
+                iconAnchor: [17, 13],
+                popupAnchor: [0, -13]
+            })
+        }) : L.circleMarker([stop.lat, stop.lng], {
             radius: 7, fillColor: '#555', color: '#fff',
             weight: 2, fillOpacity: 0.6, opacity: 0.9,
         });
@@ -167,6 +200,9 @@ function buildStopsLayer() {
             <div style="min-width:200px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <b>${stop.nom}</b>
+                </div>
+                <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:2px;">
+                    ${linesHtml}
                 </div>
                 <hr style="border:0;border-top:1px solid #eee;margin:8px 0;">
                 <div id="${popupId}">⏳ Chargement...</div>
@@ -206,7 +242,7 @@ function buildStopsLayer() {
             fetchArrivals();
 
             if (currentStopInterval) clearInterval(currentStopInterval);
-            currentStopInterval = setInterval(fetchArrivals, 15000);
+            currentStopInterval = setInterval(fetchArrivals, 10000); // 10s
         });
 
         m.on('popupclose', () => {
@@ -239,7 +275,7 @@ function filterStopsVisibility() {
  * Affiche ou cache la couche des arrêts selon le niveau de zoom.
  */
 function toggleStopsVisibility() {
-    if (map.getZoom() >= 16) { if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer); }
+    if (map.getZoom() >= 15) { if (!map.hasLayer(stopsLayer)) map.addLayer(stopsLayer); }
     else { if (map.hasLayer(stopsLayer)) map.removeLayer(stopsLayer); }
 }
 map.on('zoomend', toggleStopsVisibility);
@@ -247,8 +283,11 @@ map.on('zoomend', toggleStopsVisibility);
 // --- GÉOLOCALISATION ---
 let isTrackingLocation = false;
 let firstLocationFound = false;
+let shouldAlertOnError = false;
 
 document.getElementById('locate-btn').onclick = () => {
+    shouldAlertOnError = true;
+
     if (!navigator.geolocation) {
         alert("La géolocalisation n'est pas supportée par votre navigateur.");
         return;
@@ -270,7 +309,9 @@ document.getElementById('locate-btn').onclick = () => {
 };
 
 map.on('locationfound', (e) => {
+    shouldAlertOnError = false;
     userPosition = { lat: e.latlng.lat, lng: e.latlng.lng };
+
     if (!userMarker) {
         userMarker = L.circleMarker(e.latlng, {
             radius: 10, fillColor: '#007bff', color: '#fff', weight: 3, fillOpacity: 1
@@ -287,16 +328,22 @@ map.on('locationfound', (e) => {
 
 map.on('locationerror', (e) => {
     console.warn("Erreur de géolocalisation:", e.message);
-    let msg = "Impossible d'accéder à votre position.";
     
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-        msg += "\n\n⚠️ Erreur de sécurité : La géolocalisation nécessite une connexion sécurisée (HTTPS).";
-    } else {
-        msg += "\n\nVérifiez que vous avez autorisé l'accès à la position dans les réglages de votre navigateur.";
+    if (shouldAlertOnError) {
+        let msg = "Impossible d'accéder à votre position.";
+        
+        if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            msg += "\n\n⚠️ Erreur de sécurité : La géolocalisation nécessite une connexion sécurisée (HTTPS).";
+        } else {
+            msg += "\n\nVérifiez que vous avez autorisé l'accès à la position dans les réglages de votre navigateur.";
+        }
+        
+        alert(msg);
     }
     
-    alert(msg);
+    map.stopLocate();
     isTrackingLocation = false;
+    shouldAlertOnError = false;
     document.getElementById('locate-btn').style.color = '';
 });
 
@@ -307,7 +354,10 @@ map.on('locationerror', (e) => {
  */
 function formatLine(val) {
     if (!val) return "?";
-    return val.split('::')[1]?.split(':')[0] || val;
+    const parts = val.split(':');
+    // Trouver la première partie non vide après le préfixe TCL
+    const res = parts.slice(1).find(p => p && p !== 'Line') || parts[0];
+    return res === '?' ? '?' : res;
 }
 
 /**
@@ -337,7 +387,9 @@ async function updateBuses() {
         vehicles.forEach(v => {
             const journey = v.MonitoredVehicleJourney;
             const line    = formatLine(journey.LineRef.value);
-            knownLines.add(line);
+            if (line && line !== '?' && !line.startsWith('JD')) {
+                knownLines.add(line);
+            }
             
             if (activeFilters.size > 0 && !activeFilters.has(line)) return;
 
@@ -433,7 +485,7 @@ function makeLineBtn(line, distLabel) {
 }
 
 /**
- * Construit le contenu du modal filtre (Favoris, Proches, Autres).
+ * Construit le contenu du modal filtre (Favoris, Proches, Métro, Tram, Bus).
  */
 function buildFilterList() {
     const list = document.getElementById('filter-list');
@@ -447,7 +499,17 @@ function buildFilterList() {
     list.appendChild(btnAll);
 
     const allLines = Array.from(knownLines);
-    let nearbyLines = [], otherLines = [];
+    
+    // Categorisation
+    const metroLines = ['A', 'B', 'C', 'D', 'F1', 'F2'];
+    const tramLines  = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'RX'];
+    
+    const categories = [
+        { id: 'fav',    title: '⭐ Mes lignes favorites', lines: [...favorites].filter(l => knownLines.has(l)) },
+        { id: 'metro',  title: '🚇 Métro & Funiculaire', lines: allLines.filter(l => metroLines.includes(l)) },
+        { id: 'tram',   title: '🚋 Tramway',              lines: allLines.filter(l => tramLines.includes(l)) },
+        { id: 'bus',    title: '🚍 Bus',                  lines: allLines.filter(l => !metroLines.includes(l) && !tramLines.includes(l)) }
+    ];
 
     // Calcul des lignes à proximité (500m)
     if (userPosition && allStopsGeo.length > 0) {
@@ -461,60 +523,63 @@ function buildFilterList() {
                 if (s.dist < prev) nearbyLinesMap.set(line, s.dist);
             }
         }));
-        nearbyLines = Array.from(nearbyLinesMap.entries())
+        const nearbyLinesData = Array.from(nearbyLinesMap.entries())
             .map(([line, minDist]) => ({ line, minDist }))
             .sort((a, b) => a.minDist - b.minDist);
-        const nearbyNames = new Set(nearbyLines.map(l => l.line));
-        otherLines = allLines.filter(l => !nearbyNames.has(l))
-            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-            .map(line => ({ line, minDist: Infinity }));
-    } else {
-        otherLines = allLines
-            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-            .map(line => ({ line, minDist: Infinity }));
+
+        if (nearbyLinesData.length > 0) {
+            const header = document.createElement('div');
+            header.className = 'filter-section-header';
+            header.innerHTML = '📍 Lignes actives proches';
+            list.appendChild(header);
+            const nearbyGrid = document.createElement('div');
+            nearbyGrid.className = 'filter-grid';
+            nearbyLinesData.forEach(({ line, minDist }) => {
+                const dist = minDist < 100 ? `${Math.round(minDist)} m` : `${Math.round(minDist / 10) * 10} m`;
+                nearbyGrid.appendChild(makeLineBtn(line, dist));
+            });
+            list.appendChild(nearbyGrid);
+        }
     }
 
-    // Section FAVORIS
-    const favLines = [...favorites]
-        .filter(l => knownLines.has(l))
-        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    if (favLines.length > 0) {
-        const favHeader = document.createElement('div');
-        favHeader.className = 'filter-section-header fav-header';
-        favHeader.innerHTML = '⭐ Mes lignes favorites';
-        list.appendChild(favHeader);
-        const favGrid = document.createElement('div');
-        favGrid.className = 'filter-grid';
-        favLines.forEach(line => favGrid.appendChild(makeLineBtn(line, null)));
-        list.appendChild(favGrid);
-    }
+    // Affichage par catégories
+    categories.forEach(cat => {
+        if (cat.lines.length === 0) return;
 
-    // Section LIGNES PROCHES
-    if (nearbyLines.length > 0) {
-        const header = document.createElement('div');
-        header.className = 'filter-section-header';
-        header.innerHTML = '📍 Lignes actives proches';
-        list.appendChild(header);
-        const nearbyGrid = document.createElement('div');
-        nearbyGrid.className = 'filter-grid';
-        nearbyLines.forEach(({ line, minDist }) => {
-            const dist = minDist < 100 ? `${Math.round(minDist)} m` : `${Math.round(minDist / 10) * 10} m`;
-            nearbyGrid.appendChild(makeLineBtn(line, dist));
-        });
-        list.appendChild(nearbyGrid);
-    }
+        const headerWrapper = document.createElement('div');
+        headerWrapper.className = 'filter-section-header category-header';
+        
+        const titleSpan = document.createElement('span');
+        titleSpan.innerHTML = cat.title;
+        headerWrapper.appendChild(titleSpan);
 
-    // Section AUTRES LIGNES
-    if (otherLines.length > 0) {
-        const header = document.createElement('div');
-        header.className = 'filter-section-header';
-        header.innerHTML = nearbyLines.length > 0 ? '🚍 Autres lignes actives' : '🚍 Lignes actives en ce moment';
-        list.appendChild(header);
-        const otherGrid = document.createElement('div');
-        otherGrid.className = 'filter-grid';
-        otherLines.forEach(({ line }) => otherGrid.appendChild(makeLineBtn(line, null)));
-        list.appendChild(otherGrid);
-    }
+        // Bouton de basculement de catégorie (sauf pour favoris peut-être, mais pourquoi pas)
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'category-toggle';
+        
+        const allInCatSelected = cat.lines.every(l => activeFilters.has(l));
+        toggleBtn.innerText = allInCatSelected ? 'Tout désélectionner' : 'Tout sélectionner';
+        
+        toggleBtn.onclick = () => {
+            const shouldSelect = !allInCatSelected;
+            cat.lines.forEach(l => {
+                if (shouldSelect) activeFilters.add(l);
+                else activeFilters.delete(l);
+            });
+            syncUI();
+            updateBuses();
+            buildFilterList(); // Rafraîchir pour mettre à jour le texte du bouton toggle
+        };
+        
+        headerWrapper.appendChild(toggleBtn);
+        list.appendChild(headerWrapper);
+
+        const grid = document.createElement('div');
+        grid.className = 'filter-grid';
+        cat.lines.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+                 .forEach(line => grid.appendChild(makeLineBtn(line, null)));
+        list.appendChild(grid);
+    });
 }
 
 document.getElementById('filter-btn').onclick = () => {
@@ -633,6 +698,13 @@ document.getElementById('alert-btn').onclick = async () => {
 
 document.getElementById('close-filters').onclick = () => filterModal.classList.add('hidden');
 document.getElementById('close-alerts').onclick  = () => document.getElementById('alert-modal').classList.add('hidden');
+
+// Fermer les modals en cliquant à l'extérieur
+window.onclick = (event) => {
+    if (event.target.classList.contains('modal')) {
+        event.target.classList.add('hidden');
+    }
+};
 
 map.on('zoomend', updateBuses);
 setInterval(updateBuses, 5000); // Rafraîchissement automatique des bus (5s)
