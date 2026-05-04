@@ -14,7 +14,10 @@
     <div id="status-bar">
         <div class="header-main">
             <span id="brand">TCL Live</span>
-            <span id="update-text">Connexion...</span>
+            <div class="status-indicator-wrap">
+                <span id="api-led" class="api-led led-pending" title="Connexion en cours..."></span>
+                <span id="update-text">Connexion...</span>
+            </div>
         </div>
         <div id="controls">
             <button id="fav-btn" class="ui-button fav-btn-hidden" title="Appliquer mes favoris">⭐</button>

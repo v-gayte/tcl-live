@@ -30,6 +30,58 @@ let allStopMarkers = [];
 // Favoris (persistés en localStorage)
 let favorites = new Set(JSON.parse(localStorage.getItem('tcl_favorites') || '[]').filter(l => l && !l.startsWith('JD')));
 
+// --- PASTILLE LED STATUT API ---
+
+/**
+ * État des deux sources de données temps réel.
+ * 'pending' | 'ok' | 'empty' | 'error'
+ */
+const apiStatus = { buses: 'pending', arrivals: 'pending' };
+
+/**
+ * Met à jour la pastille LED en fonction de l'état des deux sources.
+ */
+function updateApiLed() {
+    const led = document.getElementById('api-led');
+    if (!led) return;
+
+    const { buses, arrivals } = apiStatus;
+    const states = [buses, arrivals];
+
+    led.className = 'api-led'; // réinitialise
+
+    if (states.some(s => s === 'error')) {
+        led.classList.add('led-error');
+        led.title = buildLedTooltip('Erreur réseau');
+    } else if (states.some(s => s === 'pending')) {
+        led.classList.add('led-pending');
+        led.title = 'Connexion en cours...';
+    } else if (states.every(s => s === 'ok')) {
+        led.classList.add('led-ok');
+        led.title = buildLedTooltip('Toutes les sources actives');
+    } else {
+        // Au moins une source est 'empty'
+        led.classList.add('led-partial');
+        led.title = buildLedTooltip('Données partiellement disponibles');
+    }
+}
+
+/**
+ * Construit le texte du tooltip avec le détail des deux sources.
+ */
+function buildLedTooltip(summary) {
+    const icons = { ok: '✅', empty: '⚠️', error: '❌', pending: '⏳' };
+    const labels = {
+        ok:      'Actif',
+        empty:   'Source vide (Grand Lyon)',
+        error:   'Erreur réseau',
+        pending: 'En attente',
+    };
+    const bIcon = icons[apiStatus.buses]    || '⏳';
+    const aIcon = icons[apiStatus.arrivals] || '⏳';
+    return `${summary}\nPositions GPS : ${bIcon} ${labels[apiStatus.buses] || '?'}\nTemps d’attente : ${aIcon} ${labels[apiStatus.arrivals] || '?'}`;
+}
+
 // --- GESTION DES FAVORIS ---
 
 /**
@@ -219,8 +271,11 @@ function buildStopsLayer() {
                     const passages   = data.passages    || [];
                     const srcEmpty   = data.sourceEmpty === true;
 
+                    // Mise à jour LED arrivals
+                    apiStatus.arrivals = srcEmpty ? 'empty' : 'ok';
+                    updateApiLed();
+
                     if (srcEmpty && passages.length === 0) {
-                        // [FIX] La source Grand Lyon ne retourne aucune donnée en ce moment
                         el.innerHTML = '<i style="color:#e67e22;">⏳ Données temps réel indisponibles</i>';
                     } else if (passages.length === 0) {
                         el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
@@ -230,7 +285,6 @@ function buildStopsLayer() {
                             const delaiStyle = isRT ? 'color:#E2001A;font-weight:700;' : 'color:#777;';
                             const rtBadge    = isRT ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>' : '';
                             const heure      = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
-                            // [FIX] Délai peut être un entier (minutes) ou une chaîne comme "2 mn"
                             const delaiRaw   = p.delai;
                             const delaiStr   = delaiRaw == null ? '—'
                                 : typeof delaiRaw === 'number' ? `${delaiRaw} mn`
@@ -246,6 +300,8 @@ function buildStopsLayer() {
                     }
                 } catch (e) {
                     if (el) el.innerHTML = '<i style="color:#c00;">Erreur de chargement</i>';
+                    apiStatus.arrivals = 'error';
+                    updateApiLed();
                 }
             };
 
@@ -451,11 +507,22 @@ async function updateBuses() {
         });
 
         busPositionsByLine = tempPositions;
-        // [FIX] N'afficher le compteur que si des véhicules sont présents (évite "0 bus" trompeur)
+
+        // Mise à jour LED et barre d'état
         if (vehicles.length > 0) {
+            apiStatus.buses = 'ok';
             document.getElementById('update-text').innerText = `${new Date().toLocaleTimeString('fr-FR')} • ${visibleCount} bus`;
+        } else {
+            apiStatus.buses = 'empty';
+            document.getElementById('update-text').innerText =
+                `${new Date().toLocaleTimeString('fr-FR')} • Données GPS indisponibles`;
         }
-    } catch (e) { console.error(e); }
+        updateApiLed();
+    } catch (e) {
+        console.error(e);
+        apiStatus.buses = 'error';
+        updateApiLed();
+    }
 }
 
 // --- MODAL FILTRES ---
