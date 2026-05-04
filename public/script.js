@@ -216,8 +216,13 @@ function buildStopsLayer() {
                 try {
                     const res  = await fetch(`/api/arrivals/${stop.id}`);
                     const data = await res.json();
-                    const passages = data.passages || [];
-                    if (passages.length === 0) {
+                    const passages   = data.passages    || [];
+                    const srcEmpty   = data.sourceEmpty === true;
+
+                    if (srcEmpty && passages.length === 0) {
+                        // [FIX] La source Grand Lyon ne retourne aucune donnée en ce moment
+                        el.innerHTML = '<i style="color:#e67e22;">⏳ Données temps réel indisponibles</i>';
+                    } else if (passages.length === 0) {
                         el.innerHTML = '<i style="color:#aaa;">Aucun passage prévu</i>';
                     } else {
                         el.innerHTML = passages.slice(0, 6).map(p => {
@@ -225,11 +230,16 @@ function buildStopsLayer() {
                             const delaiStyle = isRT ? 'color:#E2001A;font-weight:700;' : 'color:#777;';
                             const rtBadge    = isRT ? '<span style="font-size:0.7em;background:#E2001A;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px;">Temps réel</span>' : '';
                             const heure      = p.heure ? p.heure.split(' ')[1]?.slice(0, 5) : '—';
+                            // [FIX] Délai peut être un entier (minutes) ou une chaîne comme "2 mn"
+                            const delaiRaw   = p.delai;
+                            const delaiStr   = delaiRaw == null ? '—'
+                                : typeof delaiRaw === 'number' ? `${delaiRaw} mn`
+                                : String(delaiRaw).trim() || '—';
                             return `
                                 <div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f0f0f0;">
                                     <span style="background:#E2001A;color:#fff;border-radius:4px;padding:1px 6px;font-weight:700;font-size:0.85em;white-space:nowrap;">${p.ligne}</span>
                                     <span style="flex:1;color:#333;font-size:0.85em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.direction}">${p.direction}</span>
-                                    <span style="${delaiStyle}white-space:nowrap;">${p.delai}${rtBadge}</span>
+                                    <span style="${delaiStyle}white-space:nowrap;">${delaiStr}${rtBadge}</span>
                                     <span style="color:#aaa;font-size:0.8em;white-space:nowrap;">${heure}</span>
                                 </div>`;
                         }).join('');
@@ -384,6 +394,12 @@ async function updateBuses() {
         const currentZoom  = map.getZoom();
         const tempPositions = {};
 
+        if (vehicles.length === 0) {
+            // [FIX] Afficher un message clair dans la barre d'état si aucun véhicule
+            document.getElementById('update-text').innerText =
+                `${new Date().toLocaleTimeString('fr-FR')} • Données GPS indisponibles`;
+        }
+
         vehicles.forEach(v => {
             const journey = v.MonitoredVehicleJourney;
             const line    = formatLine(journey.LineRef.value);
@@ -435,7 +451,10 @@ async function updateBuses() {
         });
 
         busPositionsByLine = tempPositions;
-        document.getElementById('update-text').innerText = `${new Date().toLocaleTimeString('fr-FR')} • ${visibleCount} bus`;
+        // [FIX] N'afficher le compteur que si des véhicules sont présents (évite "0 bus" trompeur)
+        if (vehicles.length > 0) {
+            document.getElementById('update-text').innerText = `${new Date().toLocaleTimeString('fr-FR')} • ${visibleCount} bus`;
+        }
     } catch (e) { console.error(e); }
 }
 
